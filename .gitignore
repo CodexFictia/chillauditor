@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+*.env
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Playwright
+/playwright-report/
+/test-results/
+
+# Screenshots / temp
+*.png
+*.jpg
+*.jpeg
+*.webp
+/screenshots/
