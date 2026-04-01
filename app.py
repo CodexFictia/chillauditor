@@ -815,12 +815,12 @@ def discover_pages(
     max_pages: int = 30,
 ) -> Dict[str, Any]:
     """
-    Two-pass discovery:
-      Pass 1 — static: extract every <a href> from the landing page DOM.
-      Pass 2 — dynamic: click every visible nav/sidebar/menu element,
-               observe URL changes via history.pushState (SPA-friendly),
-               navigate back to base and repeat.
-    Returns a dict with 'pages' list and 'summary' diagnostic info.
+    BFS multi-level discovery:
+      Level 0 — load base URL, extract all links → Level 1 candidates
+      Level 1 — visit each L1 page, extract more links → Level 2 candidates
+      Level 2 — include discovered URLs without further expansion
+    Each page carries a 'parent' URL for sitemap tree building.
+    Returns {'pages': [...], 'stats': {...}}.
     """
     from playwright.sync_api import sync_playwright
 
@@ -829,7 +829,6 @@ def discover_pages(
     SKIP_EXTS = {".pdf", ".zip", ".png", ".jpg", ".jpeg", ".svg",
                  ".css", ".js", ".ico", ".xml", ".json", ".woff", ".woff2"}
 
-    # Selectors tried in order for the dynamic nav-click pass
     NAV_SELECTORS = [
         "nav a", "aside a",
         "[role='navigation'] a",
@@ -838,9 +837,7 @@ def discover_pages(
         "[class*='nav-item'] a", "[class*='navitem'] a",
         "[class*='menu-item'] a", "[class*='menuitem'] a",
         "[class*='nav-link'] a", "[class*='navlink'] a",
-        # non-anchor clickable nav items
         "[role='menuitem']", "[role='treeitem']", "[role='tab']",
-        "[class*='nav-item']:not(a)", "[class*='menu-item']:not(a)",
     ]
 
     def _normalize(url: str) -> str:
@@ -855,9 +852,58 @@ def discover_pages(
             and not any(p.path.lower().endswith(ext) for ext in SKIP_EXTS)
         )
 
+    def _extract_links(page: Any, current_url: str) -> List[Dict[str, str]]:
+        """Extract all valid same-domain links from the current loaded page."""
+        found: List[Dict[str, str]] = []
+        seen_norms: set = set()
+
+        # Static <a href> scan
+        try:
+            raw = page.eval_on_selector_all(
+                "a[href]",
+                "els => els.map(e => ({href: e.href, text: (e.innerText||'').trim().slice(0,80)}))",
+            )
+            for link in raw:
+                href = (link.get("href") or "").strip().split("#")[0]
+                if not href or not _accept(href):
+                    continue
+                norm = _normalize(href)
+                if norm not in seen_norms:
+                    seen_norms.add(norm)
+                    label = link.get("text") or urlparse(norm).path or norm
+                    found.append({"url": norm, "title": label[:80]})
+        except Exception:
+            pass
+
+        # Nav-selector href scan (re-queries fresh — no stale handles)
+        for sel in NAV_SELECTORS:
+            try:
+                locs = page.locator(sel).all()
+                for loc in locs:
+                    try:
+                        if not loc.is_visible():
+                            continue
+                        href = loc.get_attribute("href") or ""
+                        if not href or href.startswith("#") or href.startswith("javascript:"):
+                            continue
+                        full = urljoin(current_url, href).split("#")[0]
+                        if not _accept(full):
+                            continue
+                        norm = _normalize(full)
+                        if norm not in seen_norms:
+                            seen_norms.add(norm)
+                            label = (loc.inner_text() or "").strip()[:60] or norm
+                            found.append({"url": norm, "title": label})
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        return found
+
     seen: set = set()
-    pages: List[Dict[str, str]] = []
-    stats = {"via_href": 0, "via_click": 0, "nav_elements_found": 0, "login_detected": False}
+    pages: List[Dict[str, Any]] = []
+    stats = {"via_href": 0, "via_bfs_l1": 0, "via_bfs_l2": 0, "login_detected": False}
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
@@ -874,99 +920,68 @@ def discover_pages(
         )
         page = context.new_page()
 
-        # ── Login ─────────────────────────────────────────────────────────────
+        # ── Login ──────────────────────────────────────────────────────────────
         if username and password:
             _perform_login(page, login_url or base_url, username, password)
             stats["login_detected"] = True
 
+        # ── Level 0 : base URL ─────────────────────────────────────────────────
         page.goto(base_url, wait_until="domcontentloaded", timeout=30_000)
         page.wait_for_timeout(2_000)
 
         base_title = page.title() or base_url
         norm_base = _normalize(base_url)
         seen.add(norm_base)
-        pages.append({"url": norm_base, "title": base_title, "source": "base"})
+        pages.append({"url": norm_base, "title": base_title, "source": "base", "parent": None})
 
-        # ── Pass 1 : static href extraction ───────────────────────────────────
-        raw_links = page.eval_on_selector_all(
-            "a[href]",
-            "els => els.map(e => ({href: e.href, text: (e.innerText||'').trim().slice(0,80)}))",
-        )
-        for link in raw_links:
+        l1_candidates = _extract_links(page, base_url)
+        l1_queue: List[str] = []
+
+        for link in l1_candidates:
             if len(pages) >= max_pages:
                 break
-            href = (link.get("href") or "").strip().split("#")[0]
-            if not href or not _accept(href):
-                continue
-            norm = _normalize(href)
-            if norm not in seen:
-                seen.add(norm)
-                label = link.get("text") or urlparse(norm).path or norm
-                pages.append({"url": norm, "title": label[:80], "source": "href"})
+            if link["url"] not in seen:
+                seen.add(link["url"])
+                pages.append({"url": link["url"], "title": link["title"], "source": "level1", "parent": norm_base})
+                l1_queue.append(link["url"])
                 stats["via_href"] += 1
 
-        # ── Pass 2 : click nav / sidebar elements ─────────────────────────────
-        if len(pages) < max_pages:
-            # Collect candidate elements from all nav selectors
-            candidate_handles = []
-            for sel in NAV_SELECTORS:
-                try:
-                    els = page.locator(sel).all()
-                    candidate_handles.extend(els)
-                except Exception:
-                    pass
+        # ── Level 1 : visit each L1 page and extract L2 links ─────────────────
+        for l1_url in l1_queue:
+            if len(pages) >= max_pages:
+                break
+            try:
+                page.goto(l1_url, wait_until="domcontentloaded", timeout=30_000)
+                page.wait_for_timeout(1_500)
+                l2_candidates = _extract_links(page, l1_url)
+                for link in l2_candidates:
+                    if len(pages) >= max_pages:
+                        break
+                    if link["url"] not in seen:
+                        seen.add(link["url"])
+                        pages.append({"url": link["url"], "title": link["title"], "source": "level2", "parent": l1_url})
+                        stats["via_bfs_l1"] += 1
+            except Exception:
+                pass
 
-            stats["nav_elements_found"] = len(candidate_handles)
-
-            clicked_labels: set = set()
-            for loc in candidate_handles:
-                if len(pages) >= max_pages:
-                    break
-                try:
-                    if not loc.is_visible():
-                        continue
-                    label = (loc.inner_text() or "").strip()[:60]
-                    if not label or label in clicked_labels:
-                        continue
-                    clicked_labels.add(label)
-
-                    # Prefer reading href without clicking (faster, less side-effects)
-                    href = loc.get_attribute("href") or ""
-                    if href and not href.startswith("#") and not href.startswith("javascript:"):
-                        full = urljoin(base_url, href).split("#")[0]
-                        if _accept(full):
-                            norm = _normalize(full)
-                            if norm not in seen:
-                                seen.add(norm)
-                                pages.append({"url": norm, "title": label or norm, "source": "nav-href"})
-                                stats["via_click"] += 1
-                            continue
-
-                    # No usable href → actually click and observe URL change
-                    loc.scroll_into_view_if_needed()
-                    loc.click()
-                    page.wait_for_timeout(700)
-                    new_url = page.url.split("#")[0]
-                    if _accept(new_url):
-                        norm = _normalize(new_url)
-                        if norm not in seen:
-                            seen.add(norm)
-                            title = page.title() or label or norm
-                            pages.append({"url": norm, "title": title, "source": "nav-click"})
-                            stats["via_click"] += 1
-
-                    # Return to base so the sidebar stays intact for the next click
-                    if page.url.rstrip("/") != base_url.rstrip("/"):
-                        page.goto(base_url, wait_until="domcontentloaded", timeout=15_000)
-                        page.wait_for_timeout(800)
-
-                except Exception:
-                    # Single element failure must not abort the whole pass
-                    try:
-                        page.goto(base_url, wait_until="domcontentloaded", timeout=10_000)
-                        page.wait_for_timeout(600)
-                    except Exception:
-                        pass
+        # ── Level 2 : visit each L2 page just to harvest L3 links ─────────────
+        l2_pages = [p for p in pages if p["source"] == "level2"]
+        for l2_entry in l2_pages:
+            if len(pages) >= max_pages:
+                break
+            try:
+                page.goto(l2_entry["url"], wait_until="domcontentloaded", timeout=30_000)
+                page.wait_for_timeout(1_200)
+                l3_candidates = _extract_links(page, l2_entry["url"])
+                for link in l3_candidates:
+                    if len(pages) >= max_pages:
+                        break
+                    if link["url"] not in seen:
+                        seen.add(link["url"])
+                        pages.append({"url": link["url"], "title": link["title"], "source": "level3", "parent": l2_entry["url"]})
+                        stats["via_bfs_l2"] += 1
+            except Exception:
+                pass
 
         browser.close()
 
@@ -1228,6 +1243,130 @@ Write observations here
 """
 
 
+META_ANALYSIS_SYSTEM_PROMPT = """
+You are a senior CX strategist and product analyst. You have just reviewed a multi-page UX audit of an unfamiliar digital product. Your job is to synthesise what you observe across the pages and produce strategic insights — without any prior assumptions about what kind of product this is.
+
+Everything you infer must come solely from the audit data you are given: page names, page descriptions, UI labels, workflows described, issues found, and scores. Do NOT apply industry-specific frameworks or assume user types. Read the evidence and reason from it.
+
+You must return STRICT JSON only — no prose, no markdown, no explanation outside the JSON.
+
+JSON schema:
+{
+  "product_type": "string — in 1–2 sentences, infer what this product appears to be based on what you can see across pages. Be specific about the domain and function.",
+  "product_summary": "string — 3–4 sentences describing what this product does, who it likely serves, and what the primary value proposition appears to be. Base this purely on observed UI, labels, and workflows.",
+  "personas": [
+    {
+      "name": "string — a concise role title inferred from how the UI is structured (e.g. 'Operations Reviewer', 'Content Publisher', 'End User'). Do not use generic names.",
+      "description": "string — 2–3 sentences on what this persona likely does day-to-day inside this product, based on the pages and features visible.",
+      "pain_points": ["string — specific friction points this persona likely hits, based on issues found in the audit"],
+      "primary_pages": ["string — page titles this persona would use most, drawn from the audited page list"]
+    }
+  ],
+  "cx_metrics": [
+    {
+      "metric": "string — name of the CX or product metric",
+      "rationale": "string — why this metric is relevant given what this product appears to do",
+      "current_signal": "string — what the audit findings suggest about current performance on this metric",
+      "target": "string — what 'good' looks like for this metric in this context"
+    }
+  ],
+  "adoption_roadmap": {
+    "quick_wins": ["string — specific UX changes achievable in days with high impact, drawn from audit quick_wins and Low-severity issues"],
+    "short_term": ["string — changes requiring a sprint or two, typically Medium-severity issues or consistency fixes"],
+    "strategic": ["string — changes requiring design system work, architectural decisions, or research — typically High-severity or cross-cutting issues"]
+  },
+  "sitemap_insights": "string — 3–5 sentences analysing the information architecture: how logical is the navigation structure, what is buried vs prominent, any gaps or redundancies visible in the page hierarchy, and what this implies about the mental model the product assumes of its users."
+}
+
+Generate 2–4 personas, 5–8 CX metrics, and at least 3 items in each roadmap tier. Infer everything — do not ask for clarification.
+""".strip()
+
+
+def run_meta_analysis(
+    page_audits: List[Dict[str, Any]],
+    discovered_pages: List[Dict[str, Any]],
+    project_name: str,
+    client_name: str,
+) -> Dict[str, Any]:
+    """Text-only OpenAI call to produce generic cross-page strategic insights."""
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY is missing.")
+
+    # Build a compact summary of all page audits for the prompt
+    page_summaries = []
+    for i, pa in enumerate(page_audits, 1):
+        audit = pa.get("audit", {})
+        s = pa.get("score_summary", {})
+        desc = audit.get("page_description", "")[:600]
+        summary = audit.get("summary", "")
+        issues_brief = "; ".join(
+            f"{iss.get('severity','?')} – {iss.get('title','')}"
+            for iss in audit.get("issues", [])[:5]
+        )
+        qw = "; ".join(audit.get("quick_wins", [])[:3])
+        page_summaries.append(
+            f"PAGE {i}: {pa['title']}\nURL: {pa['url']}\n"
+            f"Scores — Usability:{s.get('usability','?')} Design:{s.get('design','?')} UX:{s.get('ux','?')} Overall:{s.get('overall','?')}\n"
+            f"Description: {desc}\nExecutive summary: {summary}\n"
+            f"Top issues: {issues_brief}\nQuick wins: {qw}"
+        )
+
+    # Build sitemap parent-child summary
+    sitemap_lines = []
+    for p in discovered_pages:
+        parent = p.get("parent")
+        indent = "  └ " if parent else ""
+        sitemap_lines.append(f"{indent}{p['title']} ({p['url']})")
+
+    user_content = (
+        f"Project: {project_name or 'Unknown'}\nClient: {client_name or 'Unknown'}\n\n"
+        f"=== SITEMAP ({len(discovered_pages)} pages discovered) ===\n"
+        + "\n".join(sitemap_lines[:60])
+        + f"\n\n=== PER-PAGE AUDIT SUMMARIES ({len(page_audits)} pages audited) ===\n"
+        + "\n\n".join(page_summaries)
+    )
+
+    payload = {
+        "model": OPENAI_MODEL,
+        "messages": [
+            {"role": "system", "content": META_ANALYSIS_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
+        "max_tokens": 3000,
+        "response_format": {"type": "json_object"},
+    }
+
+    resp = requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=120,
+    )
+    if not resp.ok:
+        raise RuntimeError(f"OpenAI meta-analysis error {resp.status_code}: {resp.text}")
+
+    content = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+    return clean_json(content)
+
+
+def _render_sitemap_tree(discovered_pages: List[Dict[str, Any]]) -> None:
+    """Render discovered pages as a parent-child tree using session state data."""
+    # Build parent → children map
+    children_map: Dict[Optional[str], List[Dict]] = {}
+    for p in discovered_pages:
+        parent = p.get("parent")
+        children_map.setdefault(parent, []).append(p)
+
+    def _render_subtree(parent_url: Optional[str], depth: int = 0) -> None:
+        for child in children_map.get(parent_url, []):
+            indent = "　" * depth
+            score_icon = ""
+            st.markdown(f"{indent}{'└─' if depth else '🏠'} **{child['title']}**  \n{indent}　`{child['url']}`")
+            _render_subtree(child["url"], depth + 1)
+
+    _render_subtree(None)
+
+
 # ── UI ────────────────────────────────────────────────────────────────────────
 
 SEV_ICON = {"High": "🔴", "Medium": "🟡", "Low": "🟢"}
@@ -1330,7 +1469,8 @@ if audit_mode == "🌐 Audit a website":
     # ── Step 1 : Discover ──────────────────────────────────────────────────────
     if st.button("🔍 Discover pages", disabled=not website_url.strip()):
         for k in ("discovered_pages", "discover_stats", "selected_urls", "captured_pages",
-                  "page_audits", "multipage_report", "multipage_scores"):
+                  "page_audits", "multipage_report", "multipage_scores",
+                  "screenshots_zip", "notion_url", "meta_analysis"):
             st.session_state.pop(k, None)
         try:
             with st.spinner("Launching browser — crawling links + clicking nav items…"):
@@ -1469,51 +1609,49 @@ if audit_mode == "🌐 Audit a website":
                 zf.writestr(f"{i+1:02d}_{safe}.png", pa["screenshot_bytes"])
         st.session_state["screenshots_zip"] = zip_buf.getvalue()
 
-        # Phase E – auto-push to Notion
-        notion_url = None
-        if NOTION_TOKEN and NOTION_DATABASE_ID:
-            try:
-                with st.spinner("📝 Saving report to Notion…"):
-                    notion_url = create_notion_page(
-                        combined_md, project_name, client_name,
-                        f"{len(page_audits)}-page audit of {website_url.strip()}",
-                        agg["overall"],
-                    )
-                st.session_state["notion_url"] = notion_url
-            except Exception as exc:
-                st.session_state["notion_url"] = None
-                st.warning(f"Notion push failed (you can retry from the tab): {exc}")
-        else:
-            st.session_state["notion_url"] = None
+        # Phase E – meta-analysis (personas, CX metrics, roadmap, sitemap insights)
+        discovered_pages = st.session_state.get("discovered_pages", [])
+        try:
+            with st.spinner("🧠 Running cross-page meta-analysis…"):
+                meta = run_meta_analysis(page_audits, discovered_pages, project_name, client_name)
+            st.session_state["meta_analysis"] = meta
+        except Exception as exc:
+            st.session_state["meta_analysis"] = None
+            st.warning(f"Meta-analysis failed (results still available): {exc}")
 
         st.success(f"✅ Audit complete — {len(page_audits)} pages analysed.")
 
     # ── Step 4 : Results ───────────────────────────────────────────────────────
     if "page_audits" in st.session_state and st.session_state["page_audits"]:
-        page_audits  = st.session_state["page_audits"]
-        agg_scores   = st.session_state["multipage_scores"]
-        combined_md  = st.session_state["multipage_report"]
+        page_audits   = st.session_state["page_audits"]
+        agg_scores    = st.session_state["multipage_scores"]
+        combined_md   = st.session_state["multipage_report"]
+        meta          = st.session_state.get("meta_analysis")
+        discovered_pg = st.session_state.get("discovered_pages", [])
+        zip_bytes     = st.session_state.get("screenshots_zip")
 
-        # Aggregate metrics
-        a, b, c, d = st.columns(4)
-        a.metric("Avg Usability", agg_scores["usability"])
-        b.metric("Avg Design",    agg_scores["design"])
-        c.metric("Avg UX",        agg_scores["ux"])
-        d.metric("Avg Overall",   agg_scores["overall"])
+        st.subheader("Results")
 
-        # ── Notion + zip banner ────────────────────────────────────────────────
-        notion_url = st.session_state.get("notion_url")
-        zip_bytes  = st.session_state.get("screenshots_zip")
+        # Build tab list: Summary first, then per-page, then combined + notion
+        page_tab_labels = [
+            f"{'🟢' if pa['score_summary']['overall']>=4 else '🟡' if pa['score_summary']['overall']>=3 else '🔴'} {pa['title'][:28]}"
+            for pa in page_audits
+        ]
+        tab_labels = ["📊 Summary"] + page_tab_labels + ["📋 Combined Report", "📤 Push to Notion"]
+        tabs = st.tabs(tab_labels)
 
-        banner_cols = st.columns([3, 2])
-        with banner_cols[0]:
-            if notion_url:
-                st.success(f"📝 [Report saved to Notion]({notion_url})")
-            elif NOTION_TOKEN and NOTION_DATABASE_ID:
-                st.warning("Notion push failed — retry from the Combined Report tab.")
-            else:
-                st.info("Set NOTION_TOKEN + NOTION_DATABASE_ID to auto-save reports.")
-        with banner_cols[1]:
+        # ── Tab 0 : Summary ────────────────────────────────────────────────────
+        with tabs[0]:
+            # Aggregate score metrics
+            a, b, c, d = st.columns(4)
+            a.metric("Avg Usability", agg_scores["usability"])
+            b.metric("Avg Design",    agg_scores["design"])
+            c.metric("Avg UX",        agg_scores["ux"])
+            d.metric("Avg Overall",   agg_scores["overall"])
+
+            st.divider()
+
+            # Screenshot zip download
             if zip_bytes:
                 ts = datetime.now().strftime("%Y%m%d_%H%M")
                 st.download_button(
@@ -1521,17 +1659,85 @@ if audit_mode == "🌐 Audit a website":
                     data=zip_bytes,
                     file_name=f"chillauditor_screenshots_{ts}.zip",
                     mime="application/zip",
-                    use_container_width=True,
                 )
 
-        st.subheader("Results")
+            # Meta-analysis content
+            if meta:
+                # Product type
+                st.subheader("🔍 Product Inference")
+                st.write(meta.get("product_summary", meta.get("product_type", "")))
 
-        tab_labels = [f"{'🟢' if pa['score_summary']['overall']>=4 else '🟡' if pa['score_summary']['overall']>=3 else '🔴'} {pa['title'][:30]}" for pa in page_audits]
-        tab_labels += ["📋 Combined Report", "📤 Notion"]
-        tabs = st.tabs(tab_labels)
+                st.divider()
 
+                # Sitemap tree
+                st.subheader("🗺 Site Map")
+                if discovered_pg:
+                    _render_sitemap_tree(discovered_pg)
+                sitemap_insights = meta.get("sitemap_insights", "")
+                if sitemap_insights:
+                    st.caption(sitemap_insights)
+
+                st.divider()
+
+                # Personas
+                st.subheader("👤 Inferred Personas")
+                personas = meta.get("personas", [])
+                if personas:
+                    cols = st.columns(min(len(personas), 3))
+                    for pi, persona in enumerate(personas):
+                        with cols[pi % len(cols)]:
+                            st.markdown(f"**{persona.get('name', f'Persona {pi+1}')}**")
+                            st.write(persona.get("description", ""))
+                            pain_points = persona.get("pain_points", [])
+                            if pain_points:
+                                st.markdown("**Pain points:**")
+                                for pp in pain_points:
+                                    st.markdown(f"- {pp}")
+                            primary_pages = persona.get("primary_pages", [])
+                            if primary_pages:
+                                st.caption("Primary pages: " + ", ".join(primary_pages))
+
+                st.divider()
+
+                # CX Metrics
+                st.subheader("📈 Recommended CX Metrics")
+                cx_metrics = meta.get("cx_metrics", [])
+                if cx_metrics:
+                    for metric in cx_metrics:
+                        with st.expander(f"**{metric.get('metric', '')}**"):
+                            st.write(f"**Why it matters:** {metric.get('rationale', '')}")
+                            st.write(f"**Current signal:** {metric.get('current_signal', '')}")
+                            st.write(f"**Target:** {metric.get('target', '')}")
+
+                st.divider()
+
+                # Improvement Roadmap
+                st.subheader("🛣 Improvement Roadmap")
+                roadmap = meta.get("adoption_roadmap", {})
+                r1, r2, r3 = st.columns(3)
+                with r1:
+                    st.markdown("**⚡ Quick Wins** *(days)*")
+                    for item in roadmap.get("quick_wins", []):
+                        st.markdown(f"- {item}")
+                with r2:
+                    st.markdown("**🔧 Short-term** *(sprints)*")
+                    for item in roadmap.get("short_term", []):
+                        st.markdown(f"- {item}")
+                with r3:
+                    st.markdown("**🏗 Strategic** *(months)*")
+                    for item in roadmap.get("strategic", []):
+                        st.markdown(f"- {item}")
+
+            else:
+                # Fallback: just show sitemap if meta failed
+                if discovered_pg:
+                    st.subheader("🗺 Site Map")
+                    _render_sitemap_tree(discovered_pg)
+                st.info("Meta-analysis was not available. Re-run the audit to generate personas, metrics, and roadmap.")
+
+        # ── Tabs 1..N : Per-page results ───────────────────────────────────────
         for i, pa in enumerate(page_audits):
-            with tabs[i]:
+            with tabs[i + 1]:
                 st.caption(pa["url"])
 
                 left_col, right_col = st.columns([1, 1])
@@ -1549,14 +1755,12 @@ if audit_mode == "🌐 Audit a website":
 
                     st.divider()
 
-                    # 250-word deep description
                     page_desc = pa["audit"].get("page_description", "")
                     if page_desc:
                         st.subheader("📖 Page Analysis")
                         st.write(page_desc)
                         st.divider()
 
-                    # One-line executive headline
                     headline = pa["audit"].get("summary", "")
                     if headline:
                         st.caption(f"**Key finding:** {headline}")
@@ -1570,7 +1774,8 @@ if audit_mode == "🌐 Audit a website":
                     key=f"dl_page_{i}",
                 )
 
-        with tabs[-2]:   # Combined Report
+        # ── Tab -2 : Combined Report ───────────────────────────────────────────
+        with tabs[-2]:
             st.markdown(combined_md)
             st.download_button(
                 "⬇ Download combined report",
@@ -1580,20 +1785,14 @@ if audit_mode == "🌐 Audit a website":
                 key="dl_combined",
             )
 
-        with tabs[-1]:   # Notion
-            notion_url = st.session_state.get("notion_url")
-            if notion_url:
-                st.success(f"✅ Report was automatically saved to Notion when the audit finished.")
-                st.markdown(f"**[Open in Notion →]({notion_url})**")
-                st.caption(notion_url)
-            else:
-                st.warning("Auto-push didn't run or failed. Click below to push now.")
-                _render_notion_push(
-                    combined_md, project_name, client_name,
-                    f"{len(page_audits)}-page audit",
-                    agg_scores["overall"],
-                    btn_key="notion_web_retry",
-                )
+        # ── Tab -1 : Notion (manual push) ─────────────────────────────────────
+        with tabs[-1]:
+            _render_notion_push(
+                combined_md, project_name, client_name,
+                f"{len(page_audits)}-page audit",
+                agg_scores["overall"],
+                btn_key="notion_web_push",
+            )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
