@@ -1448,16 +1448,44 @@ if audit_mode == "🌐 Audit a website":
             st.error("No pages were successfully audited.")
             st.stop()
 
-        # Phase C – aggregate
+        # Phase C – aggregate report
         combined_md = build_multipage_report(page_audits, project_name, client_name, website_url.strip())
         st.session_state["multipage_report"] = combined_md
         all_s = [pa["score_summary"] for pa in page_audits]
-        st.session_state["multipage_scores"] = {
+        agg = {
             "usability": average([s["usability"] for s in all_s]),
             "design":    average([s["design"]    for s in all_s]),
             "ux":        average([s["ux"]        for s in all_s]),
             "overall":   average([s["overall"]   for s in all_s]),
         }
+        st.session_state["multipage_scores"] = agg
+
+        # Phase D – build screenshot zip
+        import zipfile as _zf, io as _io
+        zip_buf = _io.BytesIO()
+        with _zf.ZipFile(zip_buf, "w", _zf.ZIP_DEFLATED) as zf:
+            for i, pa in enumerate(page_audits):
+                safe = re.sub(r"[^\w\-]", "_", pa["title"])[:50]
+                zf.writestr(f"{i+1:02d}_{safe}.png", pa["screenshot_bytes"])
+        st.session_state["screenshots_zip"] = zip_buf.getvalue()
+
+        # Phase E – auto-push to Notion
+        notion_url = None
+        if NOTION_TOKEN and NOTION_DATABASE_ID:
+            try:
+                with st.spinner("📝 Saving report to Notion…"):
+                    notion_url = create_notion_page(
+                        combined_md, project_name, client_name,
+                        f"{len(page_audits)}-page audit of {website_url.strip()}",
+                        agg["overall"],
+                    )
+                st.session_state["notion_url"] = notion_url
+            except Exception as exc:
+                st.session_state["notion_url"] = None
+                st.warning(f"Notion push failed (you can retry from the tab): {exc}")
+        else:
+            st.session_state["notion_url"] = None
+
         st.success(f"✅ Audit complete — {len(page_audits)} pages analysed.")
 
     # ── Step 4 : Results ───────────────────────────────────────────────────────
@@ -1473,10 +1501,33 @@ if audit_mode == "🌐 Audit a website":
         c.metric("Avg UX",        agg_scores["ux"])
         d.metric("Avg Overall",   agg_scores["overall"])
 
+        # ── Notion + zip banner ────────────────────────────────────────────────
+        notion_url = st.session_state.get("notion_url")
+        zip_bytes  = st.session_state.get("screenshots_zip")
+
+        banner_cols = st.columns([3, 2])
+        with banner_cols[0]:
+            if notion_url:
+                st.success(f"📝 [Report saved to Notion]({notion_url})")
+            elif NOTION_TOKEN and NOTION_DATABASE_ID:
+                st.warning("Notion push failed — retry from the Combined Report tab.")
+            else:
+                st.info("Set NOTION_TOKEN + NOTION_DATABASE_ID to auto-save reports.")
+        with banner_cols[1]:
+            if zip_bytes:
+                ts = datetime.now().strftime("%Y%m%d_%H%M")
+                st.download_button(
+                    "📦 Download all screenshots (.zip)",
+                    data=zip_bytes,
+                    file_name=f"chillauditor_screenshots_{ts}.zip",
+                    mime="application/zip",
+                    use_container_width=True,
+                )
+
         st.subheader("Results")
 
         tab_labels = [f"{'🟢' if pa['score_summary']['overall']>=4 else '🟡' if pa['score_summary']['overall']>=3 else '🔴'} {pa['title'][:30]}" for pa in page_audits]
-        tab_labels += ["📋 Combined Report", "📤 Push to Notion"]
+        tab_labels += ["📋 Combined Report", "📤 Notion"]
         tabs = st.tabs(tab_labels)
 
         for i, pa in enumerate(page_audits):
@@ -1529,13 +1580,20 @@ if audit_mode == "🌐 Audit a website":
                 key="dl_combined",
             )
 
-        with tabs[-1]:   # Push to Notion
-            _render_notion_push(
-                combined_md, project_name, client_name,
-                f"{len(page_audits)}-page audit",
-                agg_scores["overall"],
-                btn_key="notion_web",
-            )
+        with tabs[-1]:   # Notion
+            notion_url = st.session_state.get("notion_url")
+            if notion_url:
+                st.success(f"✅ Report was automatically saved to Notion when the audit finished.")
+                st.markdown(f"**[Open in Notion →]({notion_url})**")
+                st.caption(notion_url)
+            else:
+                st.warning("Auto-push didn't run or failed. Click below to push now.")
+                _render_notion_push(
+                    combined_md, project_name, client_name,
+                    f"{len(page_audits)}-page audit",
+                    agg_scores["overall"],
+                    btn_key="notion_web_retry",
+                )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
