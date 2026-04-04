@@ -16,10 +16,11 @@ import requests
 import streamlit as st
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
-NOTION_TOKEN = os.getenv("NOTION_TOKEN", "")
-NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID", "")
-NOTION_VERSION = os.getenv("NOTION_VERSION", "2022-06-28")
+OPENAI_MODEL   = os.getenv("OPENAI_MODEL", "gpt-4o")
+SMTP_HOST      = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT      = int(os.getenv("SMTP_PORT", "465"))
+SMTP_USER      = os.getenv("SMTP_USER", "")       # your sending Gmail address
+SMTP_PASS      = os.getenv("SMTP_PASS", "")       # Gmail App Password (not account password)
 
 st.set_page_config(page_title="AI UX Audit", page_icon="🧪", layout="wide")
 
@@ -582,156 +583,55 @@ Add screenshots / recordings here
 """
 
 
-# ── Notion helpers ────────────────────────────────────────────────────────────
+# ── Email helpers ─────────────────────────────────────────────────────────────
 
-def notion_headers() -> Dict[str, str]:
-    return {
-        "Authorization": f"Bearer {NOTION_TOKEN}",
-        "Notion-Version": NOTION_VERSION,
-        "Content-Type": "application/json",
-    }
+def send_report_email(
+    to_email: str,
+    subject: str,
+    body_text: str,
+    attachment_md: str,
+    attachment_name: str = "ux_audit_report.md",
+    zip_bytes: Optional[bytes] = None,
+    zip_name: str = "screenshots.zip",
+) -> None:
+    """Send the audit report to to_email via SMTP SSL (default: Gmail)."""
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.base import MIMEBase
+    from email import encoders
 
-
-def get_database_schema(database_id: str) -> Dict[str, Any]:
-    resp = requests.get(
-        f"https://api.notion.com/v1/databases/{database_id}",
-        headers=notion_headers(),
-        timeout=60,
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-
-def build_notion_properties(
-    schema: Dict[str, Any],
-    project_name: str,
-    client_name: str,
-    screen_name: str,
-    overall_score: float,
-) -> Dict[str, Any]:
-    props: Dict[str, Any] = {}
-    schema_props = schema.get("properties", {})
-
-    title_key = next(
-        (name for name, meta in schema_props.items() if meta.get("type") == "title"),
-        None,
-    )
-    if not title_key:
-        raise RuntimeError("Could not find a title property in the Notion database.")
-
-    title_text = f"{project_name or 'Project'} — {screen_name or 'Audit'}"
-    props[title_key] = {"title": [{"type": "text", "text": {"content": title_text[:2000]}}]}
-
-    def maybe_rich_text(name: str, value: str):
-        if name in schema_props and schema_props[name]["type"] == "rich_text":
-            props[name] = {"rich_text": [{"type": "text", "text": {"content": value[:2000]}}]}
-
-    def maybe_number(name: str, value: float):
-        if name in schema_props and schema_props[name]["type"] == "number":
-            props[name] = {"number": value}
-
-    def maybe_select(name: str, value: str):
-        if name in schema_props and schema_props[name]["type"] in {"select", "status"}:
-            key = "select" if schema_props[name]["type"] == "select" else "status"
-            props[name] = {key: {"name": value}}
-
-    def maybe_date(name: str, value: str):
-        if name in schema_props and schema_props[name]["type"] == "date":
-            props[name] = {"date": {"start": value}}
-
-    maybe_rich_text("Client", client_name or "N/A")
-    maybe_rich_text("Screen/Flow", screen_name or "Uploaded Screen")
-    maybe_date("Audit Date", datetime.now().strftime("%Y-%m-%d"))
-    maybe_number("Overall Score", overall_score)
-    maybe_select(
-        "Priority",
-        "High" if overall_score < 3 else "Medium" if overall_score < 4 else "Low",
-    )
-    return props
-
-
-def _rt(text: str) -> List[Dict]:
-    """Build a rich_text array, handling **bold** markers."""
-    result = []
-    for seg in re.split(r"(\*\*[^*]+\*\*)", text[:2000]):
-        if seg.startswith("**") and seg.endswith("**"):
-            result.append({"type": "text", "text": {"content": seg[2:-2]}, "annotations": {"bold": True}})
-        elif seg:
-            result.append({"type": "text", "text": {"content": seg}})
-    return result or [{"type": "text", "text": {"content": text[:2000]}}]
-
-
-def markdown_to_notion_blocks(md: str) -> List[Dict]:
-    """Convert markdown string to a list of Notion block objects."""
-    blocks: List[Dict] = []
-    for line in md.split("\n"):
-        s = line.strip()
-        if not s:
-            continue
-        if s == "---":
-            blocks.append({"object": "block", "type": "divider", "divider": {}})
-        elif re.match(r"^# [^#]", s):
-            blocks.append({"object": "block", "type": "heading_1", "heading_1": {"rich_text": _rt(s[2:])}})
-        elif re.match(r"^## [^#]", s):
-            blocks.append({"object": "block", "type": "heading_2", "heading_2": {"rich_text": _rt(s[3:])}})
-        elif re.match(r"^### [^#]", s):
-            blocks.append({"object": "block", "type": "heading_3", "heading_3": {"rich_text": _rt(s[4:])}})
-        elif re.match(r"^- \[[ x]\] ", s):
-            checked = s[3] == "x"
-            blocks.append({"object": "block", "type": "to_do", "to_do": {"rich_text": _rt(s[6:]), "checked": checked}})
-        elif s.startswith("- ") or s.startswith("* "):
-            blocks.append({"object": "block", "type": "bulleted_list_item", "bulleted_list_item": {"rich_text": _rt(s[2:])}})
-        elif re.match(r"^\d+\. ", s):
-            blocks.append({"object": "block", "type": "numbered_list_item", "numbered_list_item": {"rich_text": _rt(re.sub(r"^\d+\. ", "", s))}})
-        else:
-            blocks.append({"object": "block", "type": "paragraph", "paragraph": {"rich_text": _rt(s)}})
-    return blocks
-
-
-def create_notion_page(
-    markdown: str,
-    project_name: str,
-    client_name: str,
-    screen_name: str,
-    overall_score: float,
-) -> str:
-    if not NOTION_TOKEN or not NOTION_DATABASE_ID:
-        raise RuntimeError("NOTION_TOKEN or NOTION_DATABASE_ID is missing.")
-
-    schema = get_database_schema(NOTION_DATABASE_ID)
-    props = build_notion_properties(schema, project_name, client_name, screen_name, overall_score)
-    all_blocks = markdown_to_notion_blocks(markdown)
-
-    # Notion allows max 100 blocks on page creation
-    payload = {
-        "parent": {"type": "database_id", "database_id": NOTION_DATABASE_ID},
-        "properties": props,
-        "children": all_blocks[:100],
-    }
-    resp = requests.post(
-        "https://api.notion.com/v1/pages",
-        headers=notion_headers(),
-        json=payload,
-        timeout=60,
-    )
-    resp.raise_for_status()
-    page = resp.json()
-    page_id = page["id"]
-    page_url = page.get("url", "")
-
-    # Append remaining blocks in batches of 100
-    remaining = all_blocks[100:]
-    while remaining:
-        batch, remaining = remaining[:100], remaining[100:]
-        patch = requests.patch(
-            f"https://api.notion.com/v1/blocks/{page_id}/children",
-            headers=notion_headers(),
-            json={"children": batch},
-            timeout=60,
+    if not SMTP_USER or not SMTP_PASS:
+        raise RuntimeError(
+            "Email not configured. Add SMTP_USER and SMTP_PASS to your .env file.\n"
+            "For Gmail: enable 2-Step Verification, then create an App Password at "
+            "myaccount.google.com/apppasswords and set that as SMTP_PASS."
         )
-        patch.raise_for_status()
 
-    return page_url
+    msg = MIMEMultipart()
+    msg["From"]    = SMTP_USER
+    msg["To"]      = to_email
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body_text, "plain"))
+
+    # Attach markdown report
+    part = MIMEBase("application", "octet-stream")
+    part.set_payload(attachment_md.encode("utf-8"))
+    encoders.encode_base64(part)
+    part.add_header("Content-Disposition", f'attachment; filename="{attachment_name}"')
+    msg.attach(part)
+
+    # Attach zip if provided
+    if zip_bytes:
+        zpart = MIMEBase("application", "zip")
+        zpart.set_payload(zip_bytes)
+        encoders.encode_base64(zpart)
+        zpart.add_header("Content-Disposition", f'attachment; filename="{zip_name}"')
+        msg.attach(zpart)
+
+    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
+        server.login(SMTP_USER, SMTP_PASS)
+        server.sendmail(SMTP_USER, to_email, msg.as_string())
 
 
 def compute_summary_scores(audit: Dict[str, Any]) -> Dict[str, float]:
@@ -1389,14 +1289,49 @@ def _render_issues(issues: List[Dict[str, Any]], key_prefix: str = "") -> None:
             st.write(f"**Recommendation:** {issue.get('recommendation', '')}")
 
 
-def _render_notion_push(report_md: str, project_name: str, client_name: str,
-                         screen_label: str, overall: float, btn_key: str) -> None:
-    st.info("Pushes the combined report to your Notion database.")
-    if st.button("Create Notion page", key=btn_key):
+def _render_email_send(
+    report_md: str,
+    subject: str,
+    recipient_email: str,
+    btn_key: str,
+    zip_bytes: Optional[bytes] = None,
+    attachment_name: str = "ux_audit_report.md",
+    zip_name: str = "screenshots.zip",
+) -> None:
+    """Render the email send UI block."""
+    if not SMTP_USER or not SMTP_PASS:
+        st.warning(
+            "Email not configured. Add `SMTP_USER` (your Gmail address) and "
+            "`SMTP_PASS` (a Gmail App Password) to your `.env` file, then restart the app."
+        )
+        return
+
+    to = recipient_email.strip()
+    if not to:
+        st.info("Enter a recipient email address above to enable sending.")
+        return
+
+    label = f"📧 Send report to **{to}**"
+    if zip_bytes:
+        label += " *(includes screenshot zip)*"
+    if st.button(label, key=btn_key):
+        body = (
+            f"Hi,\n\nPlease find attached your AI UX Audit report.\n\n"
+            f"This report was generated automatically. "
+            f"Screenshots are included as a zip if attached.\n\n— ChillAuditor"
+        )
         try:
-            with st.spinner("Pushing to Notion…"):
-                page_url = create_notion_page(report_md, project_name, client_name, screen_label, overall)
-            st.success(f"✅ Created: {page_url}" if page_url else "✅ Created in Notion.")
+            with st.spinner(f"Sending to {to}…"):
+                send_report_email(
+                    to_email=to,
+                    subject=subject,
+                    body_text=body,
+                    attachment_md=report_md,
+                    attachment_name=attachment_name,
+                    zip_bytes=zip_bytes,
+                    zip_name=zip_name,
+                )
+            st.success(f"✅ Report sent to {to}")
         except Exception as exc:
             st.exception(exc)
 
@@ -1404,20 +1339,20 @@ def _render_notion_push(report_md: str, project_name: str, client_name: str,
 # ── Page header ────────────────────────────────────────────────────────────────
 
 st.title("🧪 AI UX Auditor")
-st.caption("Audit any website with a headless browser + GPT-4o vision → generate a full UX report → push to Notion.")
+st.caption("Audit any website with a headless browser + GPT-4o vision → generate a full UX report → email it.")
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.subheader("⚙️ Configuration")
     st.write(f"OpenAI model: `{OPENAI_MODEL}`")
     st.write(f"OpenAI key: `{'✓ set' if OPENAI_API_KEY else '✗ missing'}`")
-    st.write(f"Notion token: `{'✓ set' if NOTION_TOKEN else '✗ missing'}`")
-    st.write(f"Notion DB: `{'✓ set' if NOTION_DATABASE_ID else '✗ missing'}`")
+    st.write(f"Email sender: `{'✓ set' if SMTP_USER else '✗ missing'}`")
+    st.write(f"Email password: `{'✓ set' if SMTP_PASS else '✗ missing'}`")
     st.divider()
-    st.caption("Set OPENAI_API_KEY, NOTION_TOKEN, NOTION_DATABASE_ID in your shell environment.")
+    st.caption("Set OPENAI_API_KEY, SMTP_USER, SMTP_PASS in your .env file.")
 
 # ── Project metadata ───────────────────────────────────────────────────────────
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns([2, 2, 2])
 with col1:
     project_name = st.text_input("Project name", value="Demo Product")
     client_name  = st.text_input("Client / product", value="Internal")
@@ -1426,6 +1361,12 @@ with col2:
         "Optional context",
         placeholder="Brand personality, target user, platform, known constraints…",
         height=108,
+    )
+with col3:
+    recipient_email = st.text_input(
+        "📧 Send report to (email)",
+        placeholder="name@company.com",
+        help="Leave blank to skip email. Report is always available to download.",
     )
 
 st.divider()
@@ -1637,7 +1578,7 @@ if audit_mode == "🌐 Audit a website":
             f"{'🟢' if pa['score_summary']['overall']>=4 else '🟡' if pa['score_summary']['overall']>=3 else '🔴'} {pa['title'][:28]}"
             for pa in page_audits
         ]
-        tab_labels = ["📊 Summary"] + page_tab_labels + ["📋 Combined Report", "📤 Push to Notion"]
+        tab_labels = ["📊 Summary"] + page_tab_labels + ["📋 Combined Report", "📧 Email Report"]
         tabs = st.tabs(tab_labels)
 
         # ── Tab 0 : Summary ────────────────────────────────────────────────────
@@ -1785,13 +1726,17 @@ if audit_mode == "🌐 Audit a website":
                 key="dl_combined",
             )
 
-        # ── Tab -1 : Notion (manual push) ─────────────────────────────────────
+        # ── Tab -1 : Email Report ─────────────────────────────────────────────
         with tabs[-1]:
-            _render_notion_push(
-                combined_md, project_name, client_name,
-                f"{len(page_audits)}-page audit",
-                agg_scores["overall"],
-                btn_key="notion_web_push",
+            ts = datetime.now().strftime("%Y%m%d_%H%M")
+            _render_email_send(
+                report_md=combined_md,
+                subject=f"UX Audit Report — {project_name} ({ts})",
+                recipient_email=recipient_email,
+                btn_key="email_web_push",
+                zip_bytes=st.session_state.get("screenshots_zip"),
+                attachment_name=f"ux_audit_{ts}.md",
+                zip_name=f"screenshots_{ts}.zip",
             )
 
 
@@ -1833,7 +1778,7 @@ else:
         d.metric("Overall",   score_summary["overall"])
         st.write(audit.get("summary", ""))
 
-        tabs = st.tabs(["Issues", "Raw JSON", "Report", "Push to Notion"])
+        tabs = st.tabs(["Issues", "Raw JSON", "Report", "📧 Email Report"])
         with tabs[0]:
             _render_issues(audit.get("issues", []))
         with tabs[1]:
@@ -1842,9 +1787,11 @@ else:
             st.markdown(markdown)
             st.download_button("⬇ Download", markdown.encode(), "ux_audit_report.md", "text/markdown")
         with tabs[3]:
-            _render_notion_push(
-                markdown, project_name, client_name,
-                screen_name or audit.get("screen_name", "Screen"),
-                score_summary["overall"],
-                btn_key="notion_single",
+            ts = datetime.now().strftime("%Y%m%d_%H%M")
+            _render_email_send(
+                report_md=markdown,
+                subject=f"UX Audit — {screen_name or audit.get('screen_name', 'Screen')} ({ts})",
+                recipient_email=recipient_email,
+                btn_key="email_single",
+                attachment_name=f"ux_audit_{ts}.md",
             )
