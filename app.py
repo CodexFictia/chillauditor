@@ -669,6 +669,38 @@ h1, h2, h3 { font-family: 'Inter', sans-serif; }
 .sev-medium { background:#1c1407; color:#fbbf24; border:1px solid #d97706; border-radius:6px; padding:2px 8px; font-size:0.78rem; font-weight:600; }
 .sev-low    { background:#071c10; color:#4ade80; border:1px solid #16a34a; border-radius:6px; padding:2px 8px; font-size:0.78rem; font-weight:600; }
 
+/* ── Hide sidebar toggle + collapse sidebar ── */
+[data-testid="collapsedControl"] { display: none !important; }
+section[data-testid="stSidebar"]  { display: none !important; }
+.main .block-container { max-width: 1280px; padding-left: 2rem; padding-right: 2rem; }
+
+/* ── Mode card container ── */
+.mode-card {
+    border-radius: 18px;
+    padding: 28px 20px 22px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    margin-bottom: 4px;
+    min-height: 148px;
+}
+.mode-card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(99,102,241,0.2); }
+.mode-card .mc-icon  { font-size: 2.4rem; line-height: 1; margin-bottom: 10px; }
+.mode-card .mc-title { color: #e2e8f0; font-size: 1.05rem; font-weight: 700; margin-bottom: 5px; }
+.mode-card .mc-desc  { color: #64748b; font-size: 0.8rem; line-height: 1.4; }
+
+/* ── Config pill ── */
+.config-pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 999px; padding: 5px 14px; font-size: 0.78rem; color: rgba(255,255,255,0.7);
+}
+.config-pill .dot-ok  { width:7px;height:7px;border-radius:50%;background:#4ade80;display:inline-block; }
+.config-pill .dot-err { width:7px;height:7px;border-radius:50%;background:#f87171;display:inline-block; }
+
+/* ── Frame grid ── */
+.frame-grid img { border-radius: 8px; border: 2px solid #2d3250; }
+
 /* ── Progress bar overrides ── */
 [data-testid="stProgress"] > div > div { border-radius: 999px; }
 </style>
@@ -1361,6 +1393,76 @@ def run_meta_analysis(
     return clean_json(content)
 
 
+def extract_video_frames(
+    video_bytes: bytes,
+    interval_secs: float = 3.0,
+    max_frames: int = 15,
+    max_duration_secs: float = 30.0,
+) -> Tuple[List[Dict[str, Any]], float]:
+    """
+    Extract frames from a video at `interval_secs` intervals.
+    Returns (frames_list, duration_secs).
+    Each frame dict: {bytes, b64, title, timestamp_secs}
+    Raises ValueError if duration exceeds max_duration_secs.
+    """
+    import cv2
+    import tempfile
+
+    suffix = ".mp4"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+        f.write(video_bytes)
+        tmp_path = f.name
+
+    try:
+        cap = cv2.VideoCapture(tmp_path)
+        if not cap.isOpened():
+            raise ValueError("Could not open video file. Make sure it's a valid MP4, MOV, or WebM.")
+
+        fps      = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        total_fr = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        duration = total_fr / fps
+
+        if duration > max_duration_secs + 2:   # 2s grace
+            raise ValueError(
+                f"Video is {duration:.0f}s long — maximum allowed is {max_duration_secs:.0f}s. "
+                "Please trim it before uploading."
+            )
+
+        interval_frames = max(1, int(fps * interval_secs))
+        frames: List[Dict[str, Any]] = []
+        frame_idx = 0
+
+        while len(frames) < max_frames:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if frame_idx % interval_frames == 0:
+                # BGR → RGB → PNG bytes
+                rgb   = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                pil   = Image.fromarray(rgb)
+                buf   = io.BytesIO()
+                pil.save(buf, format="PNG", optimize=False)
+                raw   = buf.getvalue()
+                b64   = base64.b64encode(raw).decode("utf-8")
+                ts    = frame_idx / fps
+                frames.append({
+                    "bytes":          raw,
+                    "b64":            b64,
+                    "title":          f"Frame {len(frames)+1} — {ts:.1f}s",
+                    "timestamp_secs": ts,
+                })
+            frame_idx += 1
+
+        cap.release()
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+    return frames, duration
+
+
 def _render_sitemap_tree(discovered_pages: List[Dict[str, Any]]) -> None:
     """Render discovered pages as a parent-child tree using session state data."""
     # Build parent → children map
@@ -1403,50 +1505,74 @@ def _render_issues(issues: List[Dict[str, Any]], key_prefix: str = "") -> None:
 
 
 
-# ── Page header ────────────────────────────────────────────────────────────────
-
+# ── Bootstrap ─────────────────────────────────────────────────────────────────
 _inject_css()
 
-st.markdown("""
-<div class="hero-header">
-  <h1>🧪 ChillAuditor</h1>
-  <p>Headless browser · GPT-4o vision · Full UX report · Instant download</p>
+# ── Hero header ────────────────────────────────────────────────────────────────
+key_dot = '<span class="dot-ok"></span> API ready' if OPENAI_API_KEY else '<span class="dot-err"></span> API key missing'
+st.markdown(f"""
+<div class="hero-header" style="display:flex;justify-content:space-between;align-items:flex-start">
+  <div>
+    <h1>🧪 ChillAuditor</h1>
+    <p>Headless browser · GPT-4o vision · Full UX report · Instant download</p>
+  </div>
+  <div class="config-pill">{key_dot}</div>
 </div>
 """, unsafe_allow_html=True)
 
-# ── Sidebar ────────────────────────────────────────────────────────────────────
-with st.sidebar:
-    st.subheader("⚙️ Configuration")
-    st.write(f"OpenAI model: `{OPENAI_MODEL}`")
-    st.write(f"OpenAI key: `{'✓ set' if OPENAI_API_KEY else '✗ missing'}`")
-    st.divider()
-    st.caption("Set OPENAI_API_KEY in your .env file.")
-
 # ── Project metadata ───────────────────────────────────────────────────────────
-col1, col2 = st.columns([2, 3])
-with col1:
+pm1, pm2 = st.columns([2, 3])
+with pm1:
     project_name = st.text_input("Project name", value="Demo Product")
     client_name  = st.text_input("Client / product", value="Internal")
-with col2:
+with pm2:
     extra_context = st.text_area(
-        "Optional context",
+        "Additional context  *(optional)*",
         placeholder="Brand personality, target user, platform, known constraints…",
         height=108,
     )
 
-st.divider()
+st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-# ── Mode toggle ────────────────────────────────────────────────────────────────
-audit_mode = st.radio(
-    "Audit mode",
-    ["🌐 Audit a website", "🖼 Upload a screenshot"],
-    horizontal=True,
-)
+# ── Mode selector ──────────────────────────────────────────────────────────────
+if "audit_mode" not in st.session_state:
+    st.session_state["audit_mode"] = "website"
+
+MODES = [
+    ("website",    "🌐", "Audit a Website",    "Crawl any URL — headless browser discovers pages, captures screenshots, runs full AI analysis"),
+    ("screenshot", "🖼", "Upload Screenshot",  "Drop in a single screen and get an instant heuristic audit"),
+    ("video",      "🎬", "Upload a Video",     "Record up to 30s of your product — frames are extracted and each one is analysed"),
+]
+
+mc1, mc2, mc3 = st.columns(3)
+for col, (key, icon, title, desc) in zip([mc1, mc2, mc3], MODES):
+    with col:
+        sel    = st.session_state["audit_mode"] == key
+        border = "#6366f1" if sel else "#2d3250"
+        bg     = "linear-gradient(135deg,#252a3d,#1e2438)" if sel else "#1e2130"
+        shadow = "box-shadow:0 4px 20px rgba(99,102,241,0.35);" if sel else ""
+        st.markdown(
+            f'<div class="mode-card" style="border:2px solid {border};background:{bg};{shadow}">'
+            f'<div class="mc-icon">{icon}</div>'
+            f'<div class="mc-title">{title}</div>'
+            f'<div class="mc-desc">{desc}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        btn_label = "✓ Selected" if sel else "Select"
+        btn_type  = "primary" if sel else "secondary"
+        if st.button(btn_label, key=f"modesel_{key}", use_container_width=True, type=btn_type):
+            st.session_state["audit_mode"] = key
+            st.rerun()
+
+audit_mode = st.session_state["audit_mode"]
+st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+st.divider()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MODE A — WEBSITE AUDIT
 # ══════════════════════════════════════════════════════════════════════════════
-if audit_mode == "🌐 Audit a website":
+if audit_mode == "website":
 
     ensure_playwright_browsers()
 
@@ -1823,7 +1949,7 @@ if audit_mode == "🌐 Audit a website":
 # ══════════════════════════════════════════════════════════════════════════════
 # MODE B — SINGLE SCREENSHOT
 # ══════════════════════════════════════════════════════════════════════════════
-else:
+elif audit_mode == "screenshot":
     screen_name = st.text_input("Screen / flow name", value="", key="screen_name_single")
     uploaded    = st.file_uploader("Upload screenshot", type=["png", "jpg", "jpeg", "webp"])
     image_input: Optional[str] = None
@@ -1871,3 +1997,172 @@ else:
             st.download_button("⬇ Download report", markdown.encode(), f"ux_audit_{ts}.md", "text/markdown")
         with tabs[2]:
             st.json(audit)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MODE C — VIDEO AUDIT
+# ══════════════════════════════════════════════════════════════════════════════
+elif audit_mode == "video":
+
+    st.markdown("### 🎬 Upload a screen recording")
+    st.caption("MP4, MOV or WebM · max 30 seconds · frames extracted at your chosen interval")
+
+    uploaded_video = st.file_uploader(
+        "Drop video here",
+        type=["mp4", "mov", "webm", "avi"],
+        key="video_upload",
+    )
+
+    interval = st.slider("Extract a frame every … seconds", min_value=1, max_value=10, value=3, key="frame_interval")
+
+    # ── Extract frames ─────────────────────────────────────────────────────────
+    if uploaded_video and st.button("🎞 Extract frames", type="primary"):
+        for k in ("video_frames", "video_duration", "video_audits", "video_report", "video_zip"):
+            st.session_state.pop(k, None)
+        try:
+            with st.spinner("Reading video and extracting frames…"):
+                frames, duration = extract_video_frames(
+                    video_bytes=uploaded_video.read(),
+                    interval_secs=float(interval),
+                    max_frames=15,
+                    max_duration_secs=30.0,
+                )
+            st.session_state["video_frames"]   = frames
+            st.session_state["video_duration"] = duration
+            st.success(f"✅ {len(frames)} frames extracted from {duration:.1f}s video")
+        except ValueError as exc:
+            st.error(str(exc))
+        except Exception as exc:
+            st.exception(exc)
+
+    # ── Frame preview grid ────────────────────────────────────────────────────
+    if "video_frames" in st.session_state:
+        frames   = st.session_state["video_frames"]
+        duration = st.session_state["video_duration"]
+
+        st.markdown(f"**Preview — {len(frames)} frames** from {duration:.1f}s recording")
+        cols_per_row = 5
+        rows = [frames[i:i+cols_per_row] for i in range(0, len(frames), cols_per_row)]
+        for row in rows:
+            rcols = st.columns(cols_per_row)
+            for rc, fr in zip(rcols, row):
+                with rc:
+                    st.image(fr["bytes"], caption=f"{fr['timestamp_secs']:.1f}s", use_container_width=True)
+
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+        # ── Run audit ──────────────────────────────────────────────────────────
+        if st.button(f"🚀 Audit all {len(frames)} frames", type="primary"):
+            prog = st.progress(0.0, text="Analysing frames…")
+            video_audits: List[Dict[str, Any]] = []
+
+            for i, fr in enumerate(frames):
+                prog.progress((i + 0.5) / len(frames), text=f"🤖 Frame {i+1}/{len(frames)} — {fr['title']}")
+                try:
+                    data_url = f"data:image/png;base64,{fr['b64']}"
+                    audit    = call_openai(data_url, extra_context)
+                    scores   = compute_summary_scores(audit)
+                    md       = build_markdown_report(audit, project_name, client_name, fr["title"])
+                    video_audits.append({
+                        "url":              f"frame_{i+1}",
+                        "title":            fr["title"],
+                        "screenshot_bytes": fr["bytes"],
+                        "audit":            audit,
+                        "score_summary":    scores,
+                        "markdown":         md,
+                    })
+                except Exception as exc:
+                    st.warning(f"AI failed for {fr['title']}: {exc}")
+
+            prog.empty()
+            st.session_state["video_audits"] = video_audits
+
+            if video_audits:
+                combined = build_multipage_report(video_audits, project_name, client_name, "Video recording")
+                st.session_state["video_report"] = combined
+
+                import zipfile as _zf, io as _io
+                zb = _io.BytesIO()
+                with _zf.ZipFile(zb, "w", _zf.ZIP_DEFLATED) as zf:
+                    for i, va in enumerate(video_audits):
+                        zf.writestr(f"{i+1:02d}_{va['title'].replace(' ','_')}.png", va["screenshot_bytes"])
+                st.session_state["video_zip"] = zb.getvalue()
+                st.success(f"✅ {len(video_audits)} frames audited.")
+
+    # ── Video results ─────────────────────────────────────────────────────────
+    if "video_audits" in st.session_state and st.session_state["video_audits"]:
+        video_audits = st.session_state["video_audits"]
+        video_report = st.session_state.get("video_report", "")
+        video_zip    = st.session_state.get("video_zip")
+        ts           = datetime.now().strftime("%Y%m%d_%H%M")
+
+        all_s   = [va["score_summary"] for va in video_audits]
+        agg_v   = {
+            "usability": average([s["usability"] for s in all_s]),
+            "design":    average([s["design"]    for s in all_s]),
+            "ux":        average([s["ux"]        for s in all_s]),
+            "overall":   average([s["overall"]   for s in all_s]),
+        }
+
+        vsc1, vsc2, vsc3, vsc4 = st.columns(4)
+        for col, (lbl, val) in zip([vsc1,vsc2,vsc3,vsc4], [("Usability",agg_v["usability"]),("Design",agg_v["design"]),("UX Quality",agg_v["ux"]),("Overall",agg_v["overall"])]):
+            with col:
+                st.markdown(_metric_card_html(lbl, val), unsafe_allow_html=True)
+
+        st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+
+        vtab_labels = [
+            f"{'🟢' if va['score_summary']['overall']>=4 else '🟡' if va['score_summary']['overall']>=3 else '🔴'} {va['title']}"
+            for va in video_audits
+        ] + ["📋 Full Report", "⬇ Downloads"]
+        vtabs = st.tabs(vtab_labels)
+
+        for i, va in enumerate(video_audits):
+            with vtabs[i]:
+                s = va["score_summary"]
+                vc1, vc2, vc3, vc4 = st.columns(4)
+                for col, (lbl, val) in zip([vc1,vc2,vc3,vc4],[("Usability",s["usability"]),("Design",s["design"]),("UX",s["ux"]),("Overall",s["overall"])]):
+                    with col:
+                        st.markdown(_metric_card_html(lbl, val), unsafe_allow_html=True)
+                st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+
+                fi_col, fa_col = st.columns([1, 1])
+                with fi_col:
+                    st.image(va["screenshot_bytes"], caption=va["title"], use_container_width=True)
+                with fa_col:
+                    desc = va["audit"].get("page_description", "")
+                    if desc:
+                        st.markdown("**📖 Frame Analysis**")
+                        st.markdown(f'<p style="color:#cbd5e1;font-size:0.88rem;line-height:1.6">{desc}</p>', unsafe_allow_html=True)
+                    headline = va["audit"].get("summary", "")
+                    if headline:
+                        st.markdown(f'<div style="background:#1e2130;border-left:3px solid #6366f1;padding:10px 14px;border-radius:0 8px 8px 0;color:#a5b4fc;font-size:0.875rem;margin-top:12px">{headline}</div>', unsafe_allow_html=True)
+                _render_issues(va["audit"].get("issues", []), key_prefix=f"vid_{i}")
+
+        with vtabs[-2]:
+            st.markdown(video_report)
+
+        with vtabs[-1]:
+            st.markdown("### ⬇ Download your video audit")
+            dl1, dl2, dl3 = st.columns(3)
+            with dl1:
+                st.markdown('<div class="dl-card"><div class="dl-icon">📦</div><div class="dl-title">Frame Screenshots</div><div class="dl-desc">All extracted frames as a zip</div></div>', unsafe_allow_html=True)
+                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+                if video_zip:
+                    st.download_button("Download zip", data=video_zip, file_name=f"frames_{ts}.zip", mime="application/zip", use_container_width=True)
+            with dl2:
+                st.markdown('<div class="dl-card"><div class="dl-icon">📄</div><div class="dl-title">Combined Report</div><div class="dl-desc">All frames in one markdown file</div></div>', unsafe_allow_html=True)
+                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+                st.download_button("Download combined", data=video_report.encode(), file_name=f"video_audit_{ts}.md", mime="text/markdown", use_container_width=True, key="vdl_combined")
+            with dl3:
+                st.markdown('<div class="dl-card"><div class="dl-icon">🗂</div><div class="dl-title">Frame Reports</div><div class="dl-desc">One report per frame</div></div>', unsafe_allow_html=True)
+                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+                for i, va in enumerate(video_audits):
+                    st.download_button(
+                        f"↓ {va['title']}",
+                        data=va["markdown"].encode(),
+                        file_name=f"frame_{i+1:02d}_{ts}.md",
+                        mime="text/markdown",
+                        key=f"vdl_page_{i}",
+                        use_container_width=True,
+                    )
