@@ -17,10 +17,6 @@ import streamlit as st
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL   = os.getenv("OPENAI_MODEL", "gpt-4o")
-SMTP_HOST      = os.getenv("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT      = int(os.getenv("SMTP_PORT", "465"))
-SMTP_USER      = os.getenv("SMTP_USER", "")       # your sending Gmail address
-SMTP_PASS      = os.getenv("SMTP_PASS", "")       # Gmail App Password (not account password)
 
 st.set_page_config(page_title="AI UX Audit", page_icon="🧪", layout="wide")
 
@@ -583,55 +579,171 @@ Add screenshots / recordings here
 """
 
 
-# ── Email helpers ─────────────────────────────────────────────────────────────
+# ── Visual helpers ────────────────────────────────────────────────────────────
 
-def send_report_email(
-    to_email: str,
-    subject: str,
-    body_text: str,
-    attachment_md: str,
-    attachment_name: str = "ux_audit_report.md",
-    zip_bytes: Optional[bytes] = None,
-    zip_name: str = "screenshots.zip",
-) -> None:
-    """Send the audit report to to_email via SMTP SSL (default: Gmail)."""
-    import smtplib
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-    from email.mime.base import MIMEBase
-    from email import encoders
+def _inject_css() -> None:
+    st.markdown("""
+<style>
+/* ── Global ── */
+[data-testid="stAppViewContainer"] { background: #0f1117; }
+[data-testid="stSidebar"] { background: #161b27; }
+h1, h2, h3 { font-family: 'Inter', sans-serif; }
 
-    if not SMTP_USER or not SMTP_PASS:
-        raise RuntimeError(
-            "Email not configured. Add SMTP_USER and SMTP_PASS to your .env file.\n"
-            "For Gmail: enable 2-Step Verification, then create an App Password at "
-            "myaccount.google.com/apppasswords and set that as SMTP_PASS."
-        )
+/* ── Gradient hero header ── */
+.hero-header {
+    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #06b6d4 100%);
+    border-radius: 16px;
+    padding: 32px 40px 28px;
+    margin-bottom: 24px;
+    box-shadow: 0 8px 32px rgba(99,102,241,0.3);
+}
+.hero-header h1 { color: white; font-size: 2.4rem; margin: 0; letter-spacing: -0.5px; }
+.hero-header p  { color: rgba(255,255,255,0.75); margin: 6px 0 0; font-size: 1rem; }
 
-    msg = MIMEMultipart()
-    msg["From"]    = SMTP_USER
-    msg["To"]      = to_email
-    msg["Subject"] = subject
-    msg.attach(MIMEText(body_text, "plain"))
+/* ── Score badge ── */
+.score-badge {
+    display: inline-block;
+    border-radius: 999px;
+    padding: 4px 14px;
+    font-weight: 700;
+    font-size: 1.1rem;
+    margin-right: 6px;
+}
+.score-green  { background: #052e16; color: #4ade80; border: 1px solid #16a34a; }
+.score-amber  { background: #1c1407; color: #fbbf24; border: 1px solid #d97706; }
+.score-red    { background: #1c0606; color: #f87171; border: 1px solid #dc2626; }
 
-    # Attach markdown report
-    part = MIMEBase("application", "octet-stream")
-    part.set_payload(attachment_md.encode("utf-8"))
-    encoders.encode_base64(part)
-    part.add_header("Content-Disposition", f'attachment; filename="{attachment_name}"')
-    msg.attach(part)
+/* ── Metric card ── */
+.metric-card {
+    background: #1e2130;
+    border-radius: 12px;
+    padding: 20px 18px 16px;
+    text-align: center;
+    border: 1px solid #2d3250;
+}
+.metric-card .mc-label { color: #94a3b8; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em; }
+.metric-card .mc-value { font-size: 2.2rem; font-weight: 800; line-height: 1.1; margin-top: 4px; }
 
-    # Attach zip if provided
-    if zip_bytes:
-        zpart = MIMEBase("application", "zip")
-        zpart.set_payload(zip_bytes)
-        encoders.encode_base64(zpart)
-        zpart.add_header("Content-Disposition", f'attachment; filename="{zip_name}"')
-        msg.attach(zpart)
+/* ── Persona card ── */
+.persona-card {
+    background: linear-gradient(135deg, #1e2130, #252a3d);
+    border: 1px solid #2d3250;
+    border-radius: 14px;
+    padding: 20px;
+    height: 100%;
+}
+.persona-card h4 { color: #a5b4fc; margin: 0 0 8px; font-size: 1rem; }
+.persona-card p  { color: #cbd5e1; font-size: 0.875rem; margin: 0 0 10px; }
 
-    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
-        server.login(SMTP_USER, SMTP_PASS)
-        server.sendmail(SMTP_USER, to_email, msg.as_string())
+/* ── Roadmap column ── */
+.roadmap-col {
+    background: #1e2130;
+    border-radius: 12px;
+    padding: 16px;
+    border-top: 3px solid;
+    min-height: 200px;
+}
+.roadmap-quick   { border-color: #4ade80; }
+.roadmap-short   { border-color: #fbbf24; }
+.roadmap-strategic { border-color: #818cf8; }
+.roadmap-col h4  { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 12px; }
+.roadmap-col li  { color: #cbd5e1; font-size: 0.875rem; margin-bottom: 6px; }
+.roadmap-quick h4    { color: #4ade80; }
+.roadmap-short h4    { color: #fbbf24; }
+.roadmap-strategic h4 { color: #818cf8; }
+
+/* ── Download card ── */
+.dl-card {
+    background: #1e2130;
+    border: 1px solid #2d3250;
+    border-radius: 14px;
+    padding: 22px 20px;
+    text-align: center;
+}
+.dl-card .dl-icon  { font-size: 2.4rem; margin-bottom: 8px; }
+.dl-card .dl-title { color: #e2e8f0; font-size: 1rem; font-weight: 600; margin-bottom: 4px; }
+.dl-card .dl-desc  { color: #64748b; font-size: 0.8rem; }
+
+/* ── Severity badge ── */
+.sev-high   { background:#2d1515; color:#f87171; border:1px solid #b91c1c; border-radius:6px; padding:2px 8px; font-size:0.78rem; font-weight:600; }
+.sev-medium { background:#1c1407; color:#fbbf24; border:1px solid #d97706; border-radius:6px; padding:2px 8px; font-size:0.78rem; font-weight:600; }
+.sev-low    { background:#071c10; color:#4ade80; border:1px solid #16a34a; border-radius:6px; padding:2px 8px; font-size:0.78rem; font-weight:600; }
+
+/* ── Progress bar overrides ── */
+[data-testid="stProgress"] > div > div { border-radius: 999px; }
+</style>
+""", unsafe_allow_html=True)
+
+
+def _score_color(score: float) -> str:
+    if score >= 4:   return "score-green"
+    if score >= 3:   return "score-amber"
+    return "score-red"
+
+
+def _metric_card_html(label: str, value: float) -> str:
+    cls = _score_color(value)
+    return (
+        f'<div class="metric-card">'
+        f'<div class="mc-label">{label}</div>'
+        f'<div class="mc-value"><span class="score-badge {cls}">{value}</span></div>'
+        f'</div>'
+    )
+
+
+def _radar_chart(page_audits: List[Dict[str, Any]]):
+    import plotly.graph_objects as go
+
+    all_fields = HEURISTICS + DESIGN_FIELDS + UX_FIELDS
+    avgs: Dict[str, float] = {}
+    for k in all_fields:
+        vals = [int(pa["audit"]["scores"].get(k, 1)) for pa in page_audits if "audit" in pa]
+        avgs[k] = round(sum(vals) / len(vals), 2) if vals else 0.0
+
+    labels = [k.replace("_", " ").title() for k in all_fields]
+    values = [avgs[k] for k in all_fields]
+    # Close the polygon
+    labels_closed = labels + [labels[0]]
+    values_closed = values + [values[0]]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatterpolar(
+        r=values_closed,
+        theta=labels_closed,
+        fill="toself",
+        fillcolor="rgba(99,102,241,0.18)",
+        line=dict(color="#6366f1", width=2),
+        name="Score",
+    ))
+    fig.update_layout(
+        polar=dict(
+            bgcolor="#1e2130",
+            radialaxis=dict(visible=True, range=[0, 5], tickfont=dict(color="#64748b", size=10), gridcolor="#2d3250"),
+            angularaxis=dict(tickfont=dict(color="#94a3b8", size=11), gridcolor="#2d3250"),
+        ),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        showlegend=False,
+        margin=dict(l=60, r=60, t=40, b=40),
+        height=480,
+    )
+    return fig
+
+
+def _score_bar(label: str, value: float, max_val: float = 5.0) -> None:
+    pct = int((value / max_val) * 100)
+    color = "#4ade80" if value >= 4 else "#fbbf24" if value >= 3 else "#f87171"
+    st.markdown(
+        f'<div style="margin-bottom:8px">'
+        f'<div style="display:flex;justify-content:space-between;margin-bottom:3px">'
+        f'<span style="color:#94a3b8;font-size:0.82rem">{label}</span>'
+        f'<span style="color:{color};font-weight:700;font-size:0.82rem">{value}</span>'
+        f'</div>'
+        f'<div style="background:#2d3250;border-radius:999px;height:6px">'
+        f'<div style="background:{color};width:{pct}%;height:6px;border-radius:999px;transition:width 0.4s"></div>'
+        f'</div></div>',
+        unsafe_allow_html=True,
+    )
 
 
 def compute_summary_scores(audit: Dict[str, Any]) -> Dict[str, float]:
@@ -1289,70 +1401,29 @@ def _render_issues(issues: List[Dict[str, Any]], key_prefix: str = "") -> None:
             st.write(f"**Recommendation:** {issue.get('recommendation', '')}")
 
 
-def _render_email_send(
-    report_md: str,
-    subject: str,
-    recipient_email: str,
-    btn_key: str,
-    zip_bytes: Optional[bytes] = None,
-    attachment_name: str = "ux_audit_report.md",
-    zip_name: str = "screenshots.zip",
-) -> None:
-    """Render the email send UI block."""
-    if not SMTP_USER or not SMTP_PASS:
-        st.warning(
-            "Email not configured. Add `SMTP_USER` (your Gmail address) and "
-            "`SMTP_PASS` (a Gmail App Password) to your `.env` file, then restart the app."
-        )
-        return
-
-    to = recipient_email.strip()
-    if not to:
-        st.info("Enter a recipient email address above to enable sending.")
-        return
-
-    label = f"📧 Send report to **{to}**"
-    if zip_bytes:
-        label += " *(includes screenshot zip)*"
-    if st.button(label, key=btn_key):
-        body = (
-            f"Hi,\n\nPlease find attached your AI UX Audit report.\n\n"
-            f"This report was generated automatically. "
-            f"Screenshots are included as a zip if attached.\n\n— ChillAuditor"
-        )
-        try:
-            with st.spinner(f"Sending to {to}…"):
-                send_report_email(
-                    to_email=to,
-                    subject=subject,
-                    body_text=body,
-                    attachment_md=report_md,
-                    attachment_name=attachment_name,
-                    zip_bytes=zip_bytes,
-                    zip_name=zip_name,
-                )
-            st.success(f"✅ Report sent to {to}")
-        except Exception as exc:
-            st.exception(exc)
 
 
 # ── Page header ────────────────────────────────────────────────────────────────
 
-st.title("🧪 AI UX Auditor")
-st.caption("Audit any website with a headless browser + GPT-4o vision → generate a full UX report → email it.")
+_inject_css()
+
+st.markdown("""
+<div class="hero-header">
+  <h1>🧪 ChillAuditor</h1>
+  <p>Headless browser · GPT-4o vision · Full UX report · Instant download</p>
+</div>
+""", unsafe_allow_html=True)
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.subheader("⚙️ Configuration")
     st.write(f"OpenAI model: `{OPENAI_MODEL}`")
     st.write(f"OpenAI key: `{'✓ set' if OPENAI_API_KEY else '✗ missing'}`")
-    st.write(f"Email sender: `{'✓ set' if SMTP_USER else '✗ missing'}`")
-    st.write(f"Email password: `{'✓ set' if SMTP_PASS else '✗ missing'}`")
     st.divider()
-    st.caption("Set OPENAI_API_KEY, SMTP_USER, SMTP_PASS in your .env file.")
+    st.caption("Set OPENAI_API_KEY in your .env file.")
 
 # ── Project metadata ───────────────────────────────────────────────────────────
-col1, col2, col3 = st.columns([2, 2, 2])
+col1, col2 = st.columns([2, 3])
 with col1:
     project_name = st.text_input("Project name", value="Demo Product")
     client_name  = st.text_input("Client / product", value="Internal")
@@ -1361,12 +1432,6 @@ with col2:
         "Optional context",
         placeholder="Brand personality, target user, platform, known constraints…",
         height=108,
-    )
-with col3:
-    recipient_email = st.text_input(
-        "📧 Send report to (email)",
-        placeholder="name@company.com",
-        help="Leave blank to skip email. Report is always available to download.",
     )
 
 st.divider()
@@ -1571,173 +1636,188 @@ if audit_mode == "🌐 Audit a website":
         discovered_pg = st.session_state.get("discovered_pages", [])
         zip_bytes     = st.session_state.get("screenshots_zip")
 
-        st.subheader("Results")
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-        # Build tab list: Summary first, then per-page, then combined + notion
         page_tab_labels = [
-            f"{'🟢' if pa['score_summary']['overall']>=4 else '🟡' if pa['score_summary']['overall']>=3 else '🔴'} {pa['title'][:28]}"
+            f"{'🟢' if pa['score_summary']['overall']>=4 else '🟡' if pa['score_summary']['overall']>=3 else '🔴'} {pa['title'][:26]}"
             for pa in page_audits
         ]
-        tab_labels = ["📊 Summary"] + page_tab_labels + ["📋 Combined Report", "📧 Email Report"]
+        tab_labels = ["📊 Summary"] + page_tab_labels + ["📋 Full Report", "⬇ Downloads"]
         tabs = st.tabs(tab_labels)
 
         # ── Tab 0 : Summary ────────────────────────────────────────────────────
         with tabs[0]:
-            # Aggregate score metrics
-            a, b, c, d = st.columns(4)
-            a.metric("Avg Usability", agg_scores["usability"])
-            b.metric("Avg Design",    agg_scores["design"])
-            c.metric("Avg UX",        agg_scores["ux"])
-            d.metric("Avg Overall",   agg_scores["overall"])
+
+            # Score metric cards
+            cols = st.columns(4)
+            for col, (label, key) in zip(cols, [("Usability", "usability"), ("Design", "design"), ("UX Quality", "ux"), ("Overall", "overall")]):
+                with col:
+                    st.markdown(_metric_card_html(label, agg_scores[key]), unsafe_allow_html=True)
+
+            st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
+
+            # Radar chart + score bars side-by-side
+            radar_col, bars_col = st.columns([3, 2])
+            with radar_col:
+                st.markdown("**Dimension Radar** — all 23 heuristics")
+                st.plotly_chart(_radar_chart(page_audits), use_container_width=True, config={"displayModeBar": False})
+            with bars_col:
+                st.markdown("**Category averages**")
+                st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+                _score_bar("Usability (avg)", agg_scores["usability"])
+                _score_bar("Design System (avg)", agg_scores["design"])
+                _score_bar("UX Quality (avg)", agg_scores["ux"])
+                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+                # per-heuristic bars
+                st.markdown("<div style='color:#64748b;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px'>Heuristics</div>", unsafe_allow_html=True)
+                agg_h = {}
+                for k in HEURISTICS + DESIGN_FIELDS + UX_FIELDS:
+                    vals = [int(pa["audit"]["scores"].get(k, 1)) for pa in page_audits if "audit" in pa]
+                    agg_h[k] = round(sum(vals)/len(vals), 1) if vals else 0.0
+                for k in HEURISTICS:
+                    _score_bar(k.replace("_", " ").title(), agg_h[k])
 
             st.divider()
 
-            # Screenshot zip download
-            if zip_bytes:
-                ts = datetime.now().strftime("%Y%m%d_%H%M")
-                st.download_button(
-                    "📦 Download all screenshots (.zip)",
-                    data=zip_bytes,
-                    file_name=f"chillauditor_screenshots_{ts}.zip",
-                    mime="application/zip",
-                )
-
-            # Meta-analysis content
             if meta:
-                # Product type
-                st.subheader("🔍 Product Inference")
-                st.write(meta.get("product_summary", meta.get("product_type", "")))
+                # Product inference
+                st.markdown(f"### 🔍 Product Inference")
+                st.markdown(f'<p style="color:#cbd5e1;font-size:0.95rem">{meta.get("product_summary", meta.get("product_type",""))}</p>', unsafe_allow_html=True)
 
                 st.divider()
 
-                # Sitemap tree
-                st.subheader("🗺 Site Map")
-                if discovered_pg:
-                    _render_sitemap_tree(discovered_pg)
-                sitemap_insights = meta.get("sitemap_insights", "")
-                if sitemap_insights:
-                    st.caption(sitemap_insights)
+                # Sitemap + insights
+                sm_col, ins_col = st.columns([2, 3])
+                with sm_col:
+                    st.markdown("### 🗺 Site Map")
+                    if discovered_pg:
+                        _render_sitemap_tree(discovered_pg)
+                with ins_col:
+                    st.markdown("### 🏗 Architecture Insights")
+                    st.markdown(f'<p style="color:#94a3b8;font-size:0.9rem;line-height:1.6">{meta.get("sitemap_insights","")}</p>', unsafe_allow_html=True)
 
                 st.divider()
 
-                # Personas
-                st.subheader("👤 Inferred Personas")
+                # Persona cards
+                st.markdown("### 👤 Inferred Personas")
                 personas = meta.get("personas", [])
                 if personas:
-                    cols = st.columns(min(len(personas), 3))
+                    p_cols = st.columns(min(len(personas), 3))
                     for pi, persona in enumerate(personas):
-                        with cols[pi % len(cols)]:
-                            st.markdown(f"**{persona.get('name', f'Persona {pi+1}')}**")
-                            st.write(persona.get("description", ""))
-                            pain_points = persona.get("pain_points", [])
-                            if pain_points:
-                                st.markdown("**Pain points:**")
-                                for pp in pain_points:
-                                    st.markdown(f"- {pp}")
-                            primary_pages = persona.get("primary_pages", [])
-                            if primary_pages:
-                                st.caption("Primary pages: " + ", ".join(primary_pages))
+                        with p_cols[pi % len(p_cols)]:
+                            pain_html = "".join(f"<li>{pp}</li>" for pp in persona.get("pain_points", []))
+                            pages_txt = ", ".join(persona.get("primary_pages", []))
+                            st.markdown(
+                                f'<div class="persona-card">'
+                                f'<h4>{persona.get("name","Persona")}</h4>'
+                                f'<p>{persona.get("description","")}</p>'
+                                + (f'<ul style="color:#94a3b8;font-size:0.82rem;padding-left:16px;margin:0 0 8px">{pain_html}</ul>' if pain_html else "")
+                                + (f'<div style="color:#475569;font-size:0.75rem">Pages: {pages_txt}</div>' if pages_txt else "")
+                                + '</div>',
+                                unsafe_allow_html=True,
+                            )
 
                 st.divider()
 
                 # CX Metrics
-                st.subheader("📈 Recommended CX Metrics")
+                st.markdown("### 📈 Recommended CX Metrics")
                 cx_metrics = meta.get("cx_metrics", [])
                 if cx_metrics:
-                    for metric in cx_metrics:
-                        with st.expander(f"**{metric.get('metric', '')}**"):
-                            st.write(f"**Why it matters:** {metric.get('rationale', '')}")
-                            st.write(f"**Current signal:** {metric.get('current_signal', '')}")
-                            st.write(f"**Target:** {metric.get('target', '')}")
+                    for i_m, metric in enumerate(cx_metrics):
+                        with st.expander(f"**{metric.get('metric','')}**", expanded=i_m < 2):
+                            mc1, mc2 = st.columns(2)
+                            mc1.markdown(f"**Why it matters**  \n{metric.get('rationale','')}")
+                            mc1.markdown(f"**Current signal**  \n{metric.get('current_signal','')}")
+                            mc2.markdown(f"**Target**  \n{metric.get('target','')}")
 
                 st.divider()
 
-                # Improvement Roadmap
-                st.subheader("🛣 Improvement Roadmap")
+                # Roadmap
+                st.markdown("### 🛣 Improvement Roadmap")
                 roadmap = meta.get("adoption_roadmap", {})
                 r1, r2, r3 = st.columns(3)
+                qw_html  = "".join(f"<li>{x}</li>" for x in roadmap.get("quick_wins", []))
+                st_html  = "".join(f"<li>{x}</li>" for x in roadmap.get("short_term", []))
+                str_html = "".join(f"<li>{x}</li>" for x in roadmap.get("strategic", []))
                 with r1:
-                    st.markdown("**⚡ Quick Wins** *(days)*")
-                    for item in roadmap.get("quick_wins", []):
-                        st.markdown(f"- {item}")
+                    st.markdown(f'<div class="roadmap-col roadmap-quick"><h4>⚡ Quick Wins <span style="font-weight:400;opacity:0.6">days</span></h4><ul>{qw_html}</ul></div>', unsafe_allow_html=True)
                 with r2:
-                    st.markdown("**🔧 Short-term** *(sprints)*")
-                    for item in roadmap.get("short_term", []):
-                        st.markdown(f"- {item}")
+                    st.markdown(f'<div class="roadmap-col roadmap-short"><h4>🔧 Short-term <span style="font-weight:400;opacity:0.6">sprints</span></h4><ul>{st_html}</ul></div>', unsafe_allow_html=True)
                 with r3:
-                    st.markdown("**🏗 Strategic** *(months)*")
-                    for item in roadmap.get("strategic", []):
-                        st.markdown(f"- {item}")
+                    st.markdown(f'<div class="roadmap-col roadmap-strategic"><h4>🏗 Strategic <span style="font-weight:400;opacity:0.6">months</span></h4><ul>{str_html}</ul></div>', unsafe_allow_html=True)
 
             else:
-                # Fallback: just show sitemap if meta failed
                 if discovered_pg:
-                    st.subheader("🗺 Site Map")
+                    st.markdown("### 🗺 Site Map")
                     _render_sitemap_tree(discovered_pg)
-                st.info("Meta-analysis was not available. Re-run the audit to generate personas, metrics, and roadmap.")
+                st.info("Meta-analysis unavailable — re-run the audit to generate personas, metrics, and roadmap.")
 
-        # ── Tabs 1..N : Per-page results ───────────────────────────────────────
+        # ── Tabs 1..N : Per-page ───────────────────────────────────────────────
         for i, pa in enumerate(page_audits):
             with tabs[i + 1]:
-                st.caption(pa["url"])
+                st.markdown(f'<div style="color:#64748b;font-size:0.8rem;margin-bottom:12px">{pa["url"]}</div>', unsafe_allow_html=True)
 
-                left_col, right_col = st.columns([1, 1])
+                s = pa["score_summary"]
+                sc1, sc2, sc3, sc4 = st.columns(4)
+                for col, (lbl, val) in zip([sc1,sc2,sc3,sc4], [("Usability",s["usability"]),("Design",s["design"]),("UX",s["ux"]),("Overall",s["overall"])]):
+                    with col:
+                        st.markdown(_metric_card_html(lbl, val), unsafe_allow_html=True)
 
-                with left_col:
+                st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+
+                img_col, info_col = st.columns([1, 1])
+                with img_col:
                     st.image(pa["screenshot_bytes"], caption=pa["title"], use_container_width=True)
-
-                with right_col:
-                    s = pa["score_summary"]
-                    m1, m2, m3, m4 = st.columns(4)
-                    m1.metric("Usability", s["usability"])
-                    m2.metric("Design",    s["design"])
-                    m3.metric("UX",        s["ux"])
-                    m4.metric("Overall",   s["overall"])
-
-                    st.divider()
-
+                with info_col:
                     page_desc = pa["audit"].get("page_description", "")
                     if page_desc:
-                        st.subheader("📖 Page Analysis")
-                        st.write(page_desc)
-                        st.divider()
-
+                        st.markdown("**📖 Page Analysis**")
+                        st.markdown(f'<p style="color:#cbd5e1;font-size:0.88rem;line-height:1.6">{page_desc}</p>', unsafe_allow_html=True)
                     headline = pa["audit"].get("summary", "")
                     if headline:
-                        st.caption(f"**Key finding:** {headline}")
+                        st.markdown(f'<div style="background:#1e2130;border-left:3px solid #6366f1;padding:10px 14px;border-radius:0 8px 8px 0;color:#a5b4fc;font-size:0.875rem;margin-top:12px">{headline}</div>', unsafe_allow_html=True)
 
+                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
                 _render_issues(pa["audit"].get("issues", []), key_prefix=f"page_{i}")
-                st.download_button(
-                    "⬇ Download page report",
-                    pa["markdown"].encode(),
-                    file_name=f"ux_audit_page_{i+1}.md",
-                    mime="text/markdown",
-                    key=f"dl_page_{i}",
-                )
 
-        # ── Tab -2 : Combined Report ───────────────────────────────────────────
+        # ── Tab -2 : Full Report ───────────────────────────────────────────────
         with tabs[-2]:
             st.markdown(combined_md)
-            st.download_button(
-                "⬇ Download combined report",
-                combined_md.encode(),
-                file_name="ux_audit_combined.md",
-                mime="text/markdown",
-                key="dl_combined",
-            )
 
-        # ── Tab -1 : Email Report ─────────────────────────────────────────────
+        # ── Tab -1 : Downloads ─────────────────────────────────────────────────
         with tabs[-1]:
             ts = datetime.now().strftime("%Y%m%d_%H%M")
-            _render_email_send(
-                report_md=combined_md,
-                subject=f"UX Audit Report — {project_name} ({ts})",
-                recipient_email=recipient_email,
-                btn_key="email_web_push",
-                zip_bytes=st.session_state.get("screenshots_zip"),
-                attachment_name=f"ux_audit_{ts}.md",
-                zip_name=f"screenshots_{ts}.zip",
-            )
+            st.markdown("### ⬇ Download your audit")
+            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+            dl1, dl2, dl3 = st.columns(3)
+
+            with dl1:
+                st.markdown('<div class="dl-card"><div class="dl-icon">📦</div><div class="dl-title">Screenshots</div><div class="dl-desc">All captured page screenshots as a zip</div></div>', unsafe_allow_html=True)
+                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+                if zip_bytes:
+                    st.download_button("Download zip", data=zip_bytes, file_name=f"screenshots_{ts}.zip", mime="application/zip", use_container_width=True)
+                else:
+                    st.caption("Not available")
+
+            with dl2:
+                st.markdown('<div class="dl-card"><div class="dl-icon">📄</div><div class="dl-title">Combined Report</div><div class="dl-desc">All pages in one markdown file</div></div>', unsafe_allow_html=True)
+                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+                st.download_button("Download combined", data=combined_md.encode(), file_name=f"ux_audit_combined_{ts}.md", mime="text/markdown", use_container_width=True, key="dl_combined")
+
+            with dl3:
+                st.markdown('<div class="dl-card"><div class="dl-icon">🗂</div><div class="dl-title">Page Reports</div><div class="dl-desc">Individual report per page</div></div>', unsafe_allow_html=True)
+                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+                for i, pa in enumerate(page_audits):
+                    safe = re.sub(r"[^\w\-]", "_", pa["title"])[:30]
+                    st.download_button(
+                        f"↓ {pa['title'][:28]}",
+                        data=pa["markdown"].encode(),
+                        file_name=f"page_{i+1:02d}_{safe}_{ts}.md",
+                        mime="text/markdown",
+                        key=f"dl_page_{i}",
+                        use_container_width=True,
+                    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1771,27 +1851,23 @@ else:
         score_summary = st.session_state["score_summary"]
         markdown     = st.session_state["markdown"]
 
-        a, b, c, d = st.columns(4)
-        a.metric("Usability", score_summary["usability"])
-        b.metric("Design",    score_summary["design"])
-        c.metric("UX",        score_summary["ux"])
-        d.metric("Overall",   score_summary["overall"])
-        st.write(audit.get("summary", ""))
+        s = score_summary
+        sc1, sc2, sc3, sc4 = st.columns(4)
+        for col, (lbl, val) in zip([sc1,sc2,sc3,sc4], [("Usability",s["usability"]),("Design",s["design"]),("UX Quality",s["ux"]),("Overall",s["overall"])]):
+            with col:
+                st.markdown(_metric_card_html(lbl, val), unsafe_allow_html=True)
 
-        tabs = st.tabs(["Issues", "Raw JSON", "Report", "📧 Email Report"])
+        st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+
+        tabs = st.tabs(["Issues", "📖 Report", "Raw JSON"])
         with tabs[0]:
+            headline = audit.get("summary","")
+            if headline:
+                st.markdown(f'<div style="background:#1e2130;border-left:3px solid #6366f1;padding:10px 14px;border-radius:0 8px 8px 0;color:#a5b4fc;font-size:0.9rem;margin-bottom:16px">{headline}</div>', unsafe_allow_html=True)
             _render_issues(audit.get("issues", []))
         with tabs[1]:
-            st.json(audit)
-        with tabs[2]:
-            st.markdown(markdown)
-            st.download_button("⬇ Download", markdown.encode(), "ux_audit_report.md", "text/markdown")
-        with tabs[3]:
             ts = datetime.now().strftime("%Y%m%d_%H%M")
-            _render_email_send(
-                report_md=markdown,
-                subject=f"UX Audit — {screen_name or audit.get('screen_name', 'Screen')} ({ts})",
-                recipient_email=recipient_email,
-                btn_key="email_single",
-                attachment_name=f"ux_audit_{ts}.md",
-            )
+            st.markdown(markdown)
+            st.download_button("⬇ Download report", markdown.encode(), f"ux_audit_{ts}.md", "text/markdown")
+        with tabs[2]:
+            st.json(audit)
