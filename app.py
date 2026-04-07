@@ -669,39 +669,75 @@ h1, h2, h3 { font-family: 'Inter', sans-serif; }
 .sev-medium { background:#1c1407; color:#fbbf24; border:1px solid #d97706; border-radius:6px; padding:2px 8px; font-size:0.78rem; font-weight:600; }
 .sev-low    { background:#071c10; color:#4ade80; border:1px solid #16a34a; border-radius:6px; padding:2px 8px; font-size:0.78rem; font-weight:600; }
 
-/* ── Hide sidebar toggle + collapse sidebar ── */
+/* ── Hide sidebar ── */
 [data-testid="collapsedControl"] { display: none !important; }
 section[data-testid="stSidebar"]  { display: none !important; }
-.main .block-container { max-width: 1280px; padding-left: 2rem; padding-right: 2rem; }
-
-/* ── Mode card container ── */
-.mode-card {
-    border-radius: 18px;
-    padding: 28px 20px 22px;
-    text-align: center;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    margin-bottom: 4px;
-    min-height: 148px;
-}
-.mode-card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(99,102,241,0.2); }
-.mode-card .mc-icon  { font-size: 2.4rem; line-height: 1; margin-bottom: 10px; }
-.mode-card .mc-title { color: #e2e8f0; font-size: 1.05rem; font-weight: 700; margin-bottom: 5px; }
-.mode-card .mc-desc  { color: #64748b; font-size: 0.8rem; line-height: 1.4; }
+.main .block-container { max-width: 1300px; padding: 1.5rem 2.5rem; }
 
 /* ── Config pill ── */
 .config-pill {
     display: inline-flex; align-items: center; gap: 8px;
-    background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.12);
-    border-radius: 999px; padding: 5px 14px; font-size: 0.78rem; color: rgba(255,255,255,0.7);
+    background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 999px; padding: 6px 16px; font-size: 0.78rem; color: rgba(255,255,255,0.8);
+    backdrop-filter: blur(8px);
 }
-.config-pill .dot-ok  { width:7px;height:7px;border-radius:50%;background:#4ade80;display:inline-block; }
-.config-pill .dot-err { width:7px;height:7px;border-radius:50%;background:#f87171;display:inline-block; }
+.config-pill .dot-ok  { width:7px;height:7px;border-radius:50%;background:#4ade80;display:inline-block;flex-shrink:0; }
+.config-pill .dot-err { width:7px;height:7px;border-radius:50%;background:#f87171;display:inline-block;flex-shrink:0; }
 
-/* ── Frame grid ── */
-.frame-grid img { border-radius: 8px; border: 2px solid #2d3250; }
+/* ── Hero ── */
+.hero-wrap {
+    border-radius: 20px; padding: 44px 48px 40px;
+    margin-bottom: 32px; position: relative; overflow: hidden;
+    box-shadow: 0 12px 48px rgba(0,0,0,0.4);
+    transition: background 0.5s ease;
+}
+.hero-wrap::before {
+    content: ''; position: absolute; inset: 0;
+    background: rgba(0,0,0,0.15); pointer-events: none;
+}
+.hero-eyebrow {
+    font-size: 0.72rem; font-weight: 700; letter-spacing: 0.18em;
+    text-transform: uppercase; color: rgba(255,255,255,0.6); margin-bottom: 10px;
+}
+.hero-wrap h1 { color: white; font-size: 2.6rem; font-weight: 800; line-height: 1.15; margin: 0 0 14px; letter-spacing: -0.5px; }
+.hero-wrap p  { color: rgba(255,255,255,0.72); margin: 0; font-size: 1rem; line-height: 1.6; max-width: 620px; }
+.hero-top { display: flex; justify-content: space-between; align-items: flex-start; }
 
-/* ── Progress bar overrides ── */
+/* ── Mode card buttons — the WHOLE card is the button ── */
+[data-testid="column"] .stButton > button {
+    background: #1a1f2e !important;
+    border: 1.5px solid #2d3250 !important;
+    border-radius: 18px !important;
+    padding: 32px 20px 28px !important;
+    height: 188px !important;
+    width: 100% !important;
+    white-space: pre-wrap !important;
+    text-align: center !important;
+    font-size: 0.88rem !important;
+    line-height: 1.55 !important;
+    color: #94a3b8 !important;
+    transition: all 0.22s ease !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
+[data-testid="column"] .stButton > button:hover {
+    border-color: #6366f1 !important;
+    background: #1e2240 !important;
+    transform: translateY(-3px) !important;
+    box-shadow: 0 8px 28px rgba(99,102,241,0.25) !important;
+    color: #e2e8f0 !important;
+}
+/* Selected mode card */
+[data-testid="column"] .stButton > button[kind="primary"] {
+    background: linear-gradient(145deg, #252b45, #1e2438) !important;
+    border: 2px solid #6366f1 !important;
+    color: #e2e8f0 !important;
+    box-shadow: 0 6px 24px rgba(99,102,241,0.3) !important;
+}
+
+/* ── Progress bar ── */
 [data-testid="stProgress"] > div > div { border-radius: 999px; }
 </style>
 """, unsafe_allow_html=True)
@@ -1508,65 +1544,83 @@ def _render_issues(issues: List[Dict[str, Any]], key_prefix: str = "") -> None:
 # ── Bootstrap ─────────────────────────────────────────────────────────────────
 _inject_css()
 
-# ── Hero header ────────────────────────────────────────────────────────────────
-key_dot = '<span class="dot-ok"></span> API ready' if OPENAI_API_KEY else '<span class="dot-err"></span> API key missing'
+project_name = ""
+client_name  = ""
+
+# ── Mode state ─────────────────────────────────────────────────────────────────
+if "audit_mode" not in st.session_state:
+    st.session_state["audit_mode"] = "website"
+audit_mode = st.session_state["audit_mode"]
+
+# ── Dynamic hero config ────────────────────────────────────────────────────────
+HERO = {
+    "website": {
+        "gradient": "135deg, #3730a3 0%, #6d28d9 45%, #0891b2 100%",
+        "eyebrow":  "WEBSITE AUDIT",
+        "title":    "Discover every page.\nAudit every screen.",
+        "sub":      "Headless browser crawls your site structure · GPT-4o scores all 23 UX dimensions · Full heuristic report ready to download",
+    },
+    "screenshot": {
+        "gradient": "135deg, #065f46 0%, #059669 45%, #0d9488 100%",
+        "eyebrow":  "SCREENSHOT AUDIT",
+        "title":    "Upload a screen.\nGet instant UX insight.",
+        "sub":      "Drop in any screenshot · AI scores usability, design system, and UX quality · Actionable issues ranked by severity",
+    },
+    "video": {
+        "gradient": "135deg, #7c2d12 0%, #c2410c 40%, #d97706 100%",
+        "eyebrow":  "VIDEO AUDIT",
+        "title":    "Record 30 seconds.\nAudit every frame.",
+        "sub":      "Upload a screen recording · Frames extracted at your chosen interval · Every moment of your product analysed",
+    },
+}
+h = HERO[audit_mode]
+key_dot = '<span class="dot-ok"></span>&nbsp;API ready' if OPENAI_API_KEY else '<span class="dot-err"></span>&nbsp;API key missing'
+
 st.markdown(f"""
-<div class="hero-header" style="display:flex;justify-content:space-between;align-items:flex-start">
-  <div>
-    <h1>🧪 ChillAuditor</h1>
-    <p>Headless browser · GPT-4o vision · Full UX report · Instant download</p>
+<div class="hero-wrap" style="background:linear-gradient({h['gradient']})">
+  <div class="hero-top">
+    <div class="hero-eyebrow">🧪 ChillAuditor &nbsp;·&nbsp; {h['eyebrow']}</div>
+    <div class="config-pill">{key_dot}</div>
   </div>
-  <div class="config-pill">{key_dot}</div>
+  <h1>{h['title'].replace(chr(10), '<br>')}</h1>
+  <p>{h['sub']}</p>
 </div>
 """, unsafe_allow_html=True)
 
-# ── Project metadata ───────────────────────────────────────────────────────────
-pm1, pm2 = st.columns([2, 3])
-with pm1:
-    project_name = st.text_input("Project name", value="Demo Product")
-    client_name  = st.text_input("Client / product", value="Internal")
-with pm2:
-    extra_context = st.text_area(
-        "Additional context  *(optional)*",
-        placeholder="Brand personality, target user, platform, known constraints…",
-        height=108,
-    )
-
-st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-
-# ── Mode selector ──────────────────────────────────────────────────────────────
-if "audit_mode" not in st.session_state:
-    st.session_state["audit_mode"] = "website"
-
+# ── Mode selector — entire card is the button ──────────────────────────────────
 MODES = [
-    ("website",    "🌐", "Audit a Website",    "Crawl any URL — headless browser discovers pages, captures screenshots, runs full AI analysis"),
-    ("screenshot", "🖼", "Upload Screenshot",  "Drop in a single screen and get an instant heuristic audit"),
-    ("video",      "🎬", "Upload a Video",     "Record up to 30s of your product — frames are extracted and each one is analysed"),
+    ("website",    "🌐", "Audit a Website",
+     "Headless browser · BFS page discovery · AI scores every screen"),
+    ("screenshot", "🖼️", "Upload Screenshot",
+     "Drop in any screen · Instant 23-dimension heuristic analysis"),
+    ("video",      "🎬", "Upload a Video",
+     "30s recording · Frame extraction · Per-frame UX audit"),
 ]
 
-mc1, mc2, mc3 = st.columns(3)
+mc1, mc2, mc3 = st.columns(3, gap="medium")
 for col, (key, icon, title, desc) in zip([mc1, mc2, mc3], MODES):
     with col:
-        sel    = st.session_state["audit_mode"] == key
-        border = "#6366f1" if sel else "#2d3250"
-        bg     = "linear-gradient(135deg,#252a3d,#1e2438)" if sel else "#1e2130"
-        shadow = "box-shadow:0 4px 20px rgba(99,102,241,0.35);" if sel else ""
-        st.markdown(
-            f'<div class="mode-card" style="border:2px solid {border};background:{bg};{shadow}">'
-            f'<div class="mc-icon">{icon}</div>'
-            f'<div class="mc-title">{title}</div>'
-            f'<div class="mc-desc">{desc}</div>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-        btn_label = "✓ Selected" if sel else "Select"
-        btn_type  = "primary" if sel else "secondary"
-        if st.button(btn_label, key=f"modesel_{key}", use_container_width=True, type=btn_type):
+        sel = audit_mode == key
+        # The entire button IS the card — CSS handles the visual
+        label = f"{icon}\n\n{title}\n\n{desc}"
+        if st.button(label, key=f"modesel_{key}", use_container_width=True,
+                     type="primary" if sel else "secondary"):
             st.session_state["audit_mode"] = key
             st.rerun()
 
-audit_mode = st.session_state["audit_mode"]
 st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+
+# ── Optional context (tucked below cards) ─────────────────────────────────────
+with st.expander("⚙️ Additional context  *(optional)*", expanded=False):
+    extra_context = st.text_area(
+        "",
+        placeholder="Brand personality, target user, platform, known constraints…",
+        height=80,
+        label_visibility="collapsed",
+    )
+if "extra_context" not in dir():
+    extra_context = ""
+
 st.divider()
 
 # ══════════════════════════════════════════════════════════════════════════════
